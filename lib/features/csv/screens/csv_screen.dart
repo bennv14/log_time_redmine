@@ -1,8 +1,45 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:two_dimensional_scrollables/two_dimensional_scrollables.dart';
 import '../bloc/csv_bloc.dart';
 import '../models/csv_model.dart';
+
+DateTime? _parseDateString(String dateStr) {
+  final parts = dateStr.trim().split(RegExp(r'[/\-]'));
+  final now = DateTime.now();
+  
+  if (parts.length == 1) {
+    final day = int.tryParse(parts[0]);
+    if (day != null) {
+      return DateTime(now.year, now.month, day);
+    }
+  }
+  
+  if (parts.length == 3) {
+    if (parts[0].length == 4) {
+      // yyyy/MM/dd
+      return DateTime.tryParse(
+          '${parts[0]}-${parts[1].padLeft(2, '0')}-${parts[2].padLeft(2, '0')}');
+    }
+    if (parts[2].length == 4) {
+      // MM/dd/yyyy
+      return DateTime.tryParse(
+          '${parts[2]}-${parts[0].padLeft(2, '0')}-${parts[1].padLeft(2, '0')}');
+    }
+  }
+  if (parts.length == 2) {
+    // MM/dd
+    return DateTime.tryParse(
+        '${now.year}-${parts[0].padLeft(2, '0')}-${parts[1].padLeft(2, '0')}');
+  }
+  return null;
+}
+
+String _formatDate(DateTime d) =>
+    '${d.year}/${d.month.toString().padLeft(2, '0')}/${d.day.toString().padLeft(2, '0')}';
 
 class CsvScreen extends StatelessWidget {
   const CsvScreen({super.key});
@@ -29,38 +66,65 @@ class _CsvView extends StatelessWidget {
         foregroundColor: Colors.white,
         elevation: 0,
         actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: BlocBuilder<CsvBloc, CsvState>(
-              buildWhen: (prev, curr) =>
-                  prev.status != curr.status &&
-                  (curr.status == CsvStatus.loading ||
-                      prev.status == CsvStatus.loading),
-              builder: (context, state) {
-                final isLoading = state.status == CsvStatus.loading;
-                return FilledButton.icon(
-                  onPressed: isLoading
-                      ? null
-                      : () => context
-                          .read<CsvBloc>()
-                          .add(CsvEvent.pickFile()),
-                  icon: isLoading
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
-                      : const Icon(Icons.upload_file, size: 18),
-                  label: const Text('Import CSV'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF2980B9),
+          BlocBuilder<CsvBloc, CsvState>(
+            builder: (context, state) {
+              final isLoading = state.status == CsvStatus.loading;
+              final isLoaded = state.status == CsvStatus.loaded;
+              
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (isLoaded) ...[
+                    FilledButton.icon(
+                      onPressed: () {
+                        // TODO: Implement Send API
+                      },
+                      icon: const Icon(Icons.send, size: 18),
+                      label: const Text('Send API'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF27AE60),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton.icon(
+                      onPressed: () {
+                        // TODO: Implement Export CSV
+                      },
+                      icon: const Icon(Icons.download, size: 18),
+                      label: const Text('Export CSV'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFFE67E22),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  Padding(
+                    padding: const EdgeInsets.only(right: 12),
+                    child: FilledButton.icon(
+                      onPressed: isLoading
+                          ? null
+                          : () => context
+                              .read<CsvBloc>()
+                              .add(CsvEvent.pickFile()),
+                      icon: isLoading
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.upload_file, size: 18),
+                      label: const Text('Import CSV'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF2980B9),
+                      ),
+                    ),
                   ),
-                );
-              },
-            ),
+                ],
+              );
+            },
           ),
         ],
       ),
@@ -144,26 +208,295 @@ class _ErrorView extends StatelessWidget {
   }
 }
 
-class _ContentView extends StatelessWidget {
+class _ContentView extends StatefulWidget {
   final ParsedData data;
   final List<TaskEntry> tasks;
 
   const _ContentView({required this.data, required this.tasks});
 
   @override
+  State<_ContentView> createState() => _ContentViewState();
+}
+
+class _ContentViewState extends State<_ContentView> {
+  late List<DateTime> _columns;
+  
+  int? _editingRow;
+  int? _editingColumn;
+  final TextEditingController _editingController = TextEditingController();
+  final FocusNode _editingFocusNode = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _calculateColumns();
+    _editingFocusNode.addListener(_onFocusChange);
+  }
+
+  @override
+  void didUpdateWidget(covariant _ContentView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.tasks != oldWidget.tasks) {
+      _calculateColumns();
+    }
+  }
+
+  @override
+  void dispose() {
+    _editingController.dispose();
+    _editingFocusNode.removeListener(_onFocusChange);
+    _editingFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _onFocusChange() {
+    if (!_editingFocusNode.hasFocus) {
+      _saveEditingCell();
+    }
+  }
+
+  void _startEditing(int row, int column, String initialValue) {
+    setState(() {
+      _editingRow = row;
+      _editingColumn = column;
+      _editingController.text = initialValue;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _editingFocusNode.requestFocus();
+      _editingController.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: _editingController.text.length,
+      );
+    });
+  }
+
+  void _saveEditingCell() {
+    if (_editingRow == null || _editingColumn == null) return;
+    
+    final row = _editingRow!;
+    final column = _editingColumn!;
+    final text = _editingController.text.trim();
+    
+    // Grab bloc before async/setState
+    final bloc = context.read<CsvBloc>();
+    
+    setState(() {
+      _editingRow = null;
+      _editingColumn = null;
+    });
+
+    final taskIndex = row - 1;
+    final task = widget.tasks[taskIndex];
+    final date = _columns[column - 1];
+    
+    final entryIndex = task.dayEntries.indexWhere((e) {
+      final d = _parseDateString(e.date);
+      return d != null && d.year == date.year && d.month == date.month && d.day == date.day;
+    });
+
+    if (text.isEmpty) {
+      if (entryIndex >= 0) {
+        bloc.add(CsvEvent.deleteDayEntry(taskIndex, entryIndex));
+      }
+    } else {
+      final hours = double.tryParse(text);
+      if (hours != null) {
+        final entry = DayEntry(date: _formatDate(date), hours: hours);
+        if (entryIndex >= 0) {
+          bloc.add(CsvEvent.editDayEntry(taskIndex, entryIndex, entry));
+        } else {
+          bloc.add(CsvEvent.addDayEntry(taskIndex, entry));
+        }
+      }
+    }
+  }
+
+  void _calculateColumns() {
+    final monthCounts = <String, int>{};
+    final allDates = <DateTime>{};
+
+    for (final task in widget.tasks) {
+      for (final entry in task.dayEntries) {
+        final date = _parseDateString(entry.date);
+        if (date != null) {
+          final d = DateTime(date.year, date.month, date.day);
+          allDates.add(d);
+          final monthKey = '${date.year}-${date.month}';
+          monthCounts[monthKey] = (monthCounts[monthKey] ?? 0) + 1;
+        }
+      }
+    }
+
+    int targetYear;
+    int targetMonth;
+
+    if (monthCounts.isEmpty) {
+      final now = DateTime.now();
+      targetYear = now.year;
+      targetMonth = now.month;
+    } else {
+      final maxMonthKey = monthCounts.entries
+          .reduce((a, b) => a.value > b.value ? a : b)
+          .key;
+      final parts = maxMonthKey.split('-');
+      targetYear = int.parse(parts[0]);
+      targetMonth = int.parse(parts[1]);
+    }
+
+    final daysInMonth = DateTime(targetYear, targetMonth + 1, 0).day;
+    final columnDates = <DateTime>{};
+    for (int i = 1; i <= daysInMonth; i++) {
+      columnDates.add(DateTime(targetYear, targetMonth, i));
+    }
+
+    columnDates.addAll(allDates);
+    _columns = columnDates.toList()..sort();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _SummaryBar(data: data),
+        _SummaryBar(data: widget.data),
         Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.all(16),
-            itemCount: tasks.length,
-            itemBuilder: (context, index) => _TaskCard(
-              task: tasks[index],
-              taskIndex: index,
+          child: ScrollConfiguration(
+            behavior: ScrollConfiguration.of(context).copyWith(
+              dragDevices: {
+                PointerDeviceKind.touch,
+                PointerDeviceKind.mouse,
+                PointerDeviceKind.trackpad,
+              },
             ),
+            child: TableView.builder(
+              horizontalDetails: const ScrollableDetails(
+                direction: AxisDirection.right,
+                physics: ClampingScrollPhysics(),
+              ),
+              verticalDetails: const ScrollableDetails(
+                direction: AxisDirection.down,
+                physics: ClampingScrollPhysics(),
+              ),
+            columnCount: _columns.length + 1,
+            rowCount: widget.tasks.length + 1,
+            pinnedColumnCount: 1,
+            pinnedRowCount: 1,
+            columnBuilder: (int column) {
+              if (column == 0) return const TableSpan(extent: FixedTableSpanExtent(320));
+              return const TableSpan(extent: FixedTableSpanExtent(50));
+            },
+            rowBuilder: (int row) {
+              if (row == 0) return const TableSpan(extent: FixedTableSpanExtent(50));
+              return const TableSpan(extent: FixedTableSpanExtent(70));
+            },
+            cellBuilder: (BuildContext context, TableVicinity vicinity) {
+              if (vicinity.row == 0 && vicinity.column == 0) {
+                return TableViewCell(
+                  child: Container(
+                    color: Colors.grey.shade200,
+                    alignment: Alignment.center,
+                    child: const Text('Task Details', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                );
+              }
+              if (vicinity.row == 0) {
+                final date = _columns[vicinity.column - 1];
+                final isWeekend = date.weekday == DateTime.saturday || date.weekday == DateTime.sunday;
+                final weekdayStr = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][date.weekday - 1];
+                return TableViewCell(
+                  child: Container(
+                    color: isWeekend ? Colors.red.shade50 : Colors.grey.shade200,
+                    alignment: Alignment.center,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('${date.day}/${date.month}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                        Text(weekdayStr, style: TextStyle(fontSize: 11, color: isWeekend ? Colors.red : Colors.grey.shade700)),
+                      ],
+                    ),
+                  ),
+                );
+              }
+              
+              final taskIndex = vicinity.row - 1;
+              final task = widget.tasks[taskIndex];
+              
+              if (vicinity.column == 0) {
+                return TableViewCell(
+                  child: _TaskInfoCell(task: task, taskIndex: taskIndex),
+                );
+              }
+              
+              final date = _columns[vicinity.column - 1];
+              
+              // Find if task has entry for this date
+              final entryIndex = task.dayEntries.indexWhere((e) {
+                final d = _parseDateString(e.date);
+                return d != null && d.year == date.year && d.month == date.month && d.day == date.day;
+              });
+              
+              final entry = entryIndex >= 0 ? task.dayEntries[entryIndex] : null;
+              final isWeekend = date.weekday == DateTime.saturday || date.weekday == DateTime.sunday;
+              
+              final isEditing = _editingRow == vicinity.row && _editingColumn == vicinity.column;
+              
+              return TableViewCell(
+                child: isEditing
+                    ? Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          border: Border.all(color: Colors.blue, width: 2),
+                        ),
+                        alignment: Alignment.center,
+                        child: TextField(
+                          controller: _editingController,
+                          focusNode: _editingFocusNode,
+                          textAlign: TextAlign.center,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          inputFormatters: [
+                            FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d*$')),
+                          ],
+                          style: const TextStyle(
+                            color: Color(0xFF2980B9),
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                          decoration: const InputDecoration(
+                            border: InputBorder.none,
+                            contentPadding: EdgeInsets.zero,
+                            isDense: true,
+                          ),
+                          onSubmitted: (_) => _saveEditingCell(),
+                        ),
+                      )
+                    : InkWell(
+                        onTap: () {
+                          final initialValue = entry != null
+                              ? entry.hours.toStringAsFixed(entry.hours == entry.hours.truncateToDouble() ? 0 : 1)
+                              : '';
+                          _startEditing(vicinity.row, vicinity.column, initialValue);
+                        },
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: isWeekend ? Colors.red.shade50.withAlpha(100) : Colors.white,
+                            border: Border.all(color: Colors.grey.shade300, width: 0.5),
+                          ),
+                          alignment: Alignment.center,
+                          child: entry != null
+                              ? Text(
+                                  entry.hours.toStringAsFixed(entry.hours == entry.hours.truncateToDouble() ? 0 : 1),
+                                  style: const TextStyle(
+                                    color: Color(0xFF2980B9),
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13,
+                                  ),
+                                )
+                              : const SizedBox(),
+                        ),
+                      ),
+              );
+            },
+          ),
           ),
         ),
       ],
@@ -235,23 +568,15 @@ class _SummaryChip extends StatelessWidget {
   }
 }
 
-class _TaskCard extends StatefulWidget {
+class _TaskInfoCell extends StatelessWidget {
   final TaskEntry task;
   final int taskIndex;
 
-  const _TaskCard({required this.task, required this.taskIndex});
+  const _TaskInfoCell({required this.task, required this.taskIndex});
 
-  @override
-  State<_TaskCard> createState() => _TaskCardState();
-}
-
-class _TaskCardState extends State<_TaskCard> {
-  bool _expanded = true;
-
-  Future<void> _showEditTaskDialog() async {
+  Future<void> _showEditTaskDialog(BuildContext context) async {
     final bloc = context.read<CsvBloc>();
-    final task = widget.task;
-
+    
     final idController = TextEditingController(text: task.taskId);
     final nameController = TextEditingController(text: task.taskName);
     final urlController = TextEditingController(text: task.taskUrl);
@@ -305,7 +630,7 @@ class _TaskCardState extends State<_TaskCard> {
                 dayEntries: task.dayEntries,
               );
 
-              bloc.add(CsvEvent.editTask(widget.taskIndex, updatedTask));
+              bloc.add(CsvEvent.editTask(taskIndex, updatedTask));
               Navigator.pop(ctx);
             },
             child: const Text('Save'),
@@ -319,427 +644,129 @@ class _TaskCardState extends State<_TaskCard> {
     urlController.dispose();
   }
 
-  Future<void> _showAddOrEditDialog([int? dayIndex]) async {
-    final bloc = context.read<CsvBloc>();
-    final existing =
-        dayIndex != null ? widget.task.dayEntries[dayIndex] : null;
-
-    DateTime? selectedDate;
-    if (existing != null) {
-      selectedDate = _parseDateString(existing.date);
-    }
-
-    final hoursController = TextEditingController(
-      text: existing != null
-          ? existing.hours.toStringAsFixed(
-              existing.hours == existing.hours.truncateToDouble() ? 0 : 1)
-          : '',
-    );
-
-    String _formatDate(DateTime d) =>
-        '${d.year}/${d.month.toString().padLeft(2, '0')}/${d.day.toString().padLeft(2, '0')}';
-
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => AlertDialog(
-          title: Text(dayIndex != null ? 'Edit Day Entry' : 'Add Day Entry'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              InkWell(
-                onTap: () async {
-                  final picked = await showDatePicker(
-                    context: ctx,
-                    initialDate: selectedDate ?? DateTime.now(),
-                    firstDate: DateTime(2020),
-                    lastDate: DateTime(2030),
-                  );
-                  if (picked != null) {
-                    setDialogState(() => selectedDate = picked);
-                  }
-                },
-                borderRadius: BorderRadius.circular(4),
-                child: InputDecorator(
-                  decoration: const InputDecoration(
-                    labelText: 'Date',
-                    border: OutlineInputBorder(),
-                    suffixIcon: Icon(Icons.calendar_today, size: 18),
-                  ),
-                  child: Text(
-                    selectedDate != null
-                        ? _formatDate(selectedDate!)
-                        : (existing?.date.isNotEmpty == true
-                            ? existing!.date
-                            : 'Select a date'),
-                    style: TextStyle(
-                      fontSize: 15,
-                      color: selectedDate != null || existing?.date.isNotEmpty == true
-                          ? null
-                          : Colors.grey.shade500,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: hoursController,
-                decoration: const InputDecoration(
-                  labelText: 'Hours',
-                  hintText: 'e.g. 8',
-                  border: OutlineInputBorder(),
-                  suffixIcon: Icon(Icons.access_time, size: 18),
-                ),
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () {
-                if (selectedDate == null) return;
-                final hours =
-                    double.tryParse(hoursController.text.trim()) ?? 0;
-                if (hours <= 0) return;
-                final entry = DayEntry(
-                    date: _formatDate(selectedDate!), hours: hours);
-                if (dayIndex != null) {
-                  bloc.add(CsvEvent.editDayEntry(
-                      widget.taskIndex, dayIndex, entry));
-                } else {
-                  bloc.add(CsvEvent.addDayEntry(widget.taskIndex, entry));
-                }
-                Navigator.pop(ctx);
-              },
-              child: const Text('Save'),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    hoursController.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final task = widget.task;
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade200),
-      ),
-      child: Column(
-        children: [
-          _buildHeader(task),
-          if (_expanded) _buildDayList(task),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildHeader(TaskEntry task) {
-    return InkWell(
-      onTap: () => setState(() => _expanded = !_expanded),
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              decoration: BoxDecoration(
-                color: const Color(0xFF2980B9).withAlpha(26),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text(
-                task.taskId.isNotEmpty ? '#${task.taskId}' : '-',
-                style: const TextStyle(
-                  color: Color(0xFF2980B9),
-                  fontWeight: FontWeight.bold,
-                  fontSize: 13,
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    task.taskName,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w600,
-                      fontSize: 15,
-                    ),
-                  ),
-                  if (task.taskUrl.isNotEmpty)
-                    GestureDetector(
-                      onTap: () => _openUrl(task.taskUrl),
-                      child: Text(
-                        task.taskUrl,
-                        style: const TextStyle(
-                          color: Color(0xFF2980B9),
-                          fontSize: 12,
-                          decoration: TextDecoration.underline,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 12),
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: const Color(0xFF27AE60).withAlpha(26),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Text(
-                '${task.totalHours.toStringAsFixed(0)}h',
-                style: const TextStyle(
-                  color: Color(0xFF27AE60),
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Icon(
-              _expanded ? Icons.expand_less : Icons.expand_more,
-              color: Colors.grey.shade500,
-            ),
-            IconButton(
-              onPressed: _showEditTaskDialog,
-              icon: const Icon(Icons.edit_outlined),
-              iconSize: 20,
-              color: Colors.grey.shade600,
-              tooltip: 'Edit task',
-              splashRadius: 20,
-            ),
-            IconButton(
-              onPressed: () => context
-                  .read<CsvBloc>()
-                  .add(CsvEvent.deleteTask(widget.taskIndex)),
-              icon: const Icon(Icons.delete_outline),
-              iconSize: 20,
-              color: Colors.red.shade400,
-              tooltip: 'Delete task',
-              splashRadius: 20,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDayList(TaskEntry task) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.grey.shade50,
-        borderRadius: const BorderRadius.only(
-          bottomLeft: Radius.circular(12),
-          bottomRight: Radius.circular(12),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Divider(height: 1),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                ...task.dayEntries.asMap().entries.map(
-                      (e) => _DayChip(
-                        entry: e.value,
-                        onEdit: () => _showAddOrEditDialog(e.key),
-                        onDelete: () => context.read<CsvBloc>().add(
-                            CsvEvent.deleteDayEntry(widget.taskIndex, e.key)),
-                      ),
-                    ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-            child: TextButton.icon(
-              onPressed: () => _showAddOrEditDialog(),
-              icon: const Icon(Icons.add, size: 16),
-              label: const Text('Add Day Entry'),
-              style: TextButton.styleFrom(
-                foregroundColor: const Color(0xFF2980B9),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Parses date strings in multiple formats:
-  /// - yyyy/MM/dd or yyyy-MM-dd
-  /// - MM/dd or MM-dd (no year → uses current year)
-  /// - MM/dd/yyyy (month first, year last)
-  static DateTime? _parseDateString(String dateStr) {
-    final parts = dateStr.trim().split(RegExp(r'[/\-]'));
-    final now = DateTime.now();
-    
-    if (parts.length == 1) {
-      final day = int.tryParse(parts[0]);
-      if (day != null) {
-        return DateTime(now.year, now.month, day);
-      }
-    }
-    
-    if (parts.length == 3) {
-      if (parts[0].length == 4) {
-        // yyyy/MM/dd
-        return DateTime.tryParse(
-            '${parts[0]}-${parts[1].padLeft(2, '0')}-${parts[2].padLeft(2, '0')}');
-      }
-      if (parts[2].length == 4) {
-        // MM/dd/yyyy
-        return DateTime.tryParse(
-            '${parts[2]}-${parts[0].padLeft(2, '0')}-${parts[1].padLeft(2, '0')}');
-      }
-    }
-    if (parts.length == 2) {
-      // MM/dd
-      return DateTime.tryParse(
-          '${now.year}-${parts[0].padLeft(2, '0')}-${parts[1].padLeft(2, '0')}');
-    }
-    return null;
-  }
-
   Future<void> _openUrl(String url) async {
     final uri = Uri.tryParse(url);
     if (uri != null && await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
     }
   }
-}
-
-class _DayChip extends StatelessWidget {
-  final DayEntry entry;
-  final VoidCallback? onEdit;
-  final VoidCallback? onDelete;
-
-  const _DayChip({
-    required this.entry,
-    this.onEdit,
-    this.onDelete,
-  });
-
-  /// Shows only MM/dd if the entry's year matches the current year,
-  /// otherwise shows the full date string.
-  String _displayDate(String dateStr) {
-    final parts = dateStr.split(RegExp(r'[/\-]'));
-    final currentYear = DateTime.now().year;
-    if (parts.length == 3 && parts[0].length == 4) {
-      final year = int.tryParse(parts[0]);
-      if (year == currentYear) {
-        final month = int.tryParse(parts[1]) ?? parts[1];
-        final day = int.tryParse(parts[2]) ?? parts[2];
-        return '$month/$day';
-      }
-    }
-    return dateStr;
-  }
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(8),
-      child: InkWell(
-        onTap: onEdit,
-        borderRadius: BorderRadius.circular(8),
-        hoverColor: const Color(0xFF2980B9).withAlpha(15),
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: const Color(0xFF2980B9).withAlpha(80)),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border(
+          right: BorderSide(color: Colors.grey.shade300, width: 1),
+          bottom: BorderSide(color: Colors.grey.shade300, width: 0.5),
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 50,
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+            decoration: BoxDecoration(
+              color: const Color(0xFF2980B9).withAlpha(26),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              task.taskId.isNotEmpty ? '#${task.taskId}' : '-',
+              style: const TextStyle(
+                color: Color(0xFF2980B9),
+                fontWeight: FontWeight.bold,
+                fontSize: 11,
+              ),
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(
-                    left: 10, top: 6, bottom: 6, right: 4),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.edit_outlined,
-                      size: 12,
-                      color: Colors.grey.shade400,
-                    ),
-                    const SizedBox(width: 5),
-                    Text(
-                      _displayDate(entry.date),
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: Colors.grey.shade700,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF2980B9).withAlpha(26),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        '${entry.hours.toStringAsFixed(entry.hours == entry.hours.truncateToDouble() ? 0 : 1)}h',
-                        style: const TextStyle(
-                          fontSize: 13,
-                          color: Color(0xFF2980B9),
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ],
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  task.taskName,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                 ),
+                if (task.taskUrl.isNotEmpty)
+                  GestureDetector(
+                    onTap: () => _openUrl(task.taskUrl),
+                    child: Text(
+                      task.taskUrl,
+                      style: const TextStyle(
+                        color: Color(0xFF2980B9),
+                        fontSize: 11,
+                        decoration: TextDecoration.underline,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 4),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            decoration: BoxDecoration(
+              color: const Color(0xFF27AE60).withAlpha(26),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              '${task.totalHours.toStringAsFixed(0)}h',
+              style: const TextStyle(
+                color: Color(0xFF27AE60),
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
               ),
-              Container(
-                width: 1,
-                height: 30,
-                color: Colors.grey.shade200,
-              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
               SizedBox(
-                width: 30,
-                height: 34,
+                width: 24,
+                height: 24,
                 child: IconButton(
                   padding: EdgeInsets.zero,
-                  iconSize: 14,
-                  onPressed: onDelete,
+                  onPressed: () => _showEditTaskDialog(context),
+                  icon: const Icon(Icons.edit_outlined),
+                  iconSize: 16,
+                  color: Colors.grey.shade600,
+                  tooltip: 'Edit task',
+                ),
+              ),
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: IconButton(
+                  padding: EdgeInsets.zero,
+                  onPressed: () => context
+                      .read<CsvBloc>()
+                      .add(CsvEvent.deleteTask(taskIndex)),
                   icon: const Icon(Icons.delete_outline),
-                  color: Colors.red.shade300,
-                  tooltip: 'Delete',
+                  iconSize: 16,
+                  color: Colors.red.shade400,
+                  tooltip: 'Delete task',
                 ),
               ),
             ],
           ),
-        ),
+        ],
       ),
     );
   }
 }
+
 

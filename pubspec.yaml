@@ -37,6 +37,7 @@ dependencies:
   url_launcher: ^6.3.2
   flutter_bloc: ^9.1.1
   equatable: ^2.0.8
+  two_dimensional_scrollables: ^0.3.7
 
 dev_dependencies:
   flutter_test:
