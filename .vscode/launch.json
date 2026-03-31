@@ -14,10 +14,7 @@
             "name": "Flutter Web (Arc)",
             "request": "launch",
             "type": "dart",
-            "args": ["-d", "chrome"],
-            "env": {
-                "CHROME_EXECUTABLE": "/Applications/Arc.app/Contents/MacOS/Arc"
-            }
+            "args": ["-d", "web-server", "--web-port", "8080"]
         }
     ]
 }
