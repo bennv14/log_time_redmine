@@ -4,6 +4,7 @@ abstract class CsvEvent extends Equatable {
   const CsvEvent();
 
   const factory CsvEvent.pickFile() = _PickFileEvent;
+  const factory CsvEvent.addTask(TaskEntry task) = _AddTaskEvent;
   const factory CsvEvent.deleteTask(int taskIndex) = _DeleteTaskEvent;
   const factory CsvEvent.editTask(int taskIndex, TaskEntry task) = _EditTaskEvent;
   const factory CsvEvent.deleteDayEntry(int taskIndex, int dayIndex) =
@@ -19,6 +20,15 @@ class _PickFileEvent extends CsvEvent {
 
   @override
   List<Object?> get props => [];
+}
+
+class _AddTaskEvent extends CsvEvent {
+  const _AddTaskEvent(this.task);
+
+  final TaskEntry task;
+
+  @override
+  List<Object?> get props => [task];
 }
 
 class _DeleteTaskEvent extends CsvEvent {

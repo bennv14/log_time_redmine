@@ -11,6 +11,7 @@ part 'csv_state.dart';
 class CsvBloc extends Bloc<CsvEvent, CsvState> {
   CsvBloc() : super(const CsvState()) {
     on<_PickFileEvent>(_onPickFileRequested);
+    on<_AddTaskEvent>(_onAddTask);
     on<_DeleteTaskEvent>(_onDeleteTask);
     on<_EditTaskEvent>(_onEditTask);
     on<_DeleteDayEntryEvent>(_onDeleteDayEntry);
@@ -66,6 +67,14 @@ class CsvBloc extends Bloc<CsvEvent, CsvState> {
         errorMessage: 'Error: $e',
       ));
     }
+  }
+
+  void _onAddTask(
+    _AddTaskEvent event,
+    Emitter<CsvState> emit,
+  ) {
+    final tasks = List<TaskEntry>.of(state.tasks ?? [])..add(event.task);
+    emit(state.copyWith(tasks: tasks));
   }
 
   void _onDeleteTask(

@@ -38,6 +38,7 @@ dependencies:
   flutter_bloc: ^9.1.1
   equatable: ^2.0.8
   two_dimensional_scrollables: ^0.3.7
+  dio: ^5.9.2
 
 dev_dependencies:
   flutter_test:

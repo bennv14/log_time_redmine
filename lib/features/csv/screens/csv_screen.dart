@@ -6,6 +6,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:two_dimensional_scrollables/two_dimensional_scrollables.dart';
 import '../bloc/csv_bloc.dart';
 import '../models/csv_model.dart';
+import '../../time_entry/models/time_entry_request.dart';
+import '../../time_entry/repositories/time_entry_repository.dart';
 
 DateTime? _parseDateString(String dateStr) {
   final parts = dateStr.trim().split(RegExp(r'[/\-]'));
@@ -56,6 +58,120 @@ class CsvScreen extends StatelessWidget {
 class _CsvView extends StatelessWidget {
   const _CsvView();
 
+  Future<void> _showApiKeyDialog(BuildContext context, List<TaskEntry> tasks) async {
+    final apiKeyController = TextEditingController();
+    bool isLoading = false;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: const Text('Enter Redmine API Key'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('Please enter your API key to send time entries.'),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: apiKeyController,
+                    decoration: const InputDecoration(
+                      labelText: 'API Key',
+                      border: OutlineInputBorder(),
+                    ),
+                    obscureText: true,
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isLoading ? null : () => Navigator.pop(ctx),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: isLoading
+                      ? null
+                      : () async {
+                          final apiKey = apiKeyController.text.trim();
+                          if (apiKey.isEmpty) return;
+
+                          setState(() => isLoading = true);
+
+                          try {
+                            final repository = TimeEntryRepository();
+                            final requests = <TimeEntryRequest>[];
+
+                            for (final task in tasks) {
+                              final issueId = int.tryParse(task.taskId);
+                              if (issueId == null) continue;
+
+                              for (final entry in task.dayEntries) {
+                                final dateStr = entry.date.replaceAll('/', '-');
+                                
+                                requests.add(
+                                  TimeEntryRequest(
+                                    issueId: issueId,
+                                    spentOn: dateStr,
+                                    hours: entry.hours,
+                                    activityId: 9, // Default to 9 (Development)
+                                    comments: task.taskName,
+                                  ),
+                                );
+                              }
+                            }
+
+                            if (requests.isEmpty) {
+                              throw Exception('No valid time entries to send.');
+                            }
+
+                            await repository.createMultipleTimeEntries(
+                              requests: requests,
+                              apiKey: apiKey,
+                            );
+
+                            if (ctx.mounted) {
+                              Navigator.pop(ctx);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Time entries sent successfully!'),
+                                  backgroundColor: Colors.green,
+                                ),
+                              );
+                            }
+                          } catch (e) {
+                            setState(() => isLoading = false);
+                            if (ctx.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('Error: $e'),
+                                  backgroundColor: Colors.red,
+                                ),
+                              );
+                            }
+                          }
+                        },
+                  child: isLoading
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text('Send'),
+                ),
+              ],
+            );
+          }
+        );
+      },
+    );
+    apiKeyController.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -76,24 +192,11 @@ class _CsvView extends StatelessWidget {
                 children: [
                   if (isLoaded) ...[
                     FilledButton.icon(
-                      onPressed: () {
-                        // TODO: Implement Send API
-                      },
+                      onPressed: () => _showApiKeyDialog(context, state.tasks ?? []),
                       icon: const Icon(Icons.send, size: 18),
                       label: const Text('Send API'),
                       style: FilledButton.styleFrom(
                         backgroundColor: const Color(0xFF27AE60),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    FilledButton.icon(
-                      onPressed: () {
-                        // TODO: Implement Export CSV
-                      },
-                      icon: const Icon(Icons.download, size: 18),
-                      label: const Text('Export CSV'),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: const Color(0xFFE67E22),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -378,7 +481,7 @@ class _ContentViewState extends State<_ContentView> {
                 physics: ClampingScrollPhysics(),
               ),
             columnCount: _columns.length + 1,
-            rowCount: widget.tasks.length + 1,
+            rowCount: widget.tasks.length + 2,
             pinnedColumnCount: 1,
             pinnedRowCount: 1,
             columnBuilder: (int column) {
@@ -387,6 +490,7 @@ class _ContentViewState extends State<_ContentView> {
             },
             rowBuilder: (int row) {
               if (row == 0) return const TableSpan(extent: FixedTableSpanExtent(50));
+              if (row == widget.tasks.length + 1) return const TableSpan(extent: FixedTableSpanExtent(60));
               return const TableSpan(extent: FixedTableSpanExtent(70));
             },
             cellBuilder: (BuildContext context, TableVicinity vicinity) {
@@ -413,6 +517,50 @@ class _ContentViewState extends State<_ContentView> {
                         Text('${date.day}/${date.month}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                         Text(weekdayStr, style: TextStyle(fontSize: 11, color: isWeekend ? Colors.red : Colors.grey.shade700)),
                       ],
+                    ),
+                  ),
+                );
+              }
+              
+              if (vicinity.row == widget.tasks.length + 1) {
+                if (vicinity.column == 0) {
+                  return TableViewCell(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        border: Border(
+                          right: BorderSide(color: Colors.grey.shade300, width: 1),
+                          bottom: BorderSide(color: Colors.grey.shade300, width: 0.5),
+                        ),
+                      ),
+                      child: TextButton.icon(
+                        onPressed: () {
+                          final newTask = TaskEntry(
+                            taskId: '',
+                            taskName: 'New Task',
+                            taskUrl: '',
+                            dayEntries: const [],
+                          );
+                          context.read<CsvBloc>().add(CsvEvent.addTask(newTask));
+                        },
+                        icon: const Icon(Icons.add, size: 18),
+                        label: const Text('Add Task'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: const Color(0xFF2980B9),
+                        ),
+                      ),
+                    ),
+                  );
+                }
+                return TableViewCell(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      border: Border(
+                        right: BorderSide(color: Colors.grey.shade300, width: 0.5),
+                        bottom: BorderSide(color: Colors.grey.shade300, width: 0.5),
+                      ),
                     ),
                   ),
                 );
