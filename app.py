@@ -161,8 +161,7 @@ def sync_redmine():
                 "issue_id": entry.get("issue_id"),
                 "spent_on": entry.get("spent_on"),
                 "hours": entry.get("hours"),
-                "activity_id": entry.get("activity_id", 2),
-                "comments": ""
+                "activity_id": 9,
             }
         }
         
@@ -174,7 +173,7 @@ def sync_redmine():
                 url,
                 json=payload,
                 headers=headers,
-                timeout=1
+                timeout=15
             )
             app.logger.info(f"Response status: {response.status_code}, body: {response.text}")
             if response.status_code in (200, 201):
