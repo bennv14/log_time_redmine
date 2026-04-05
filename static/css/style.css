@@ -549,10 +549,22 @@ body {
 /* ============================================================
    Empty State
    ============================================================ */
+.empty-state-td {
+    padding: 0 !important;
+    text-align: left !important;
+    border-bottom: none !important;
+}
+
 .empty-state {
+    position: sticky;
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: 90vw;
     text-align: center;
-    padding: 4rem 2rem;
+    padding: 4rem 1rem;
     color: var(--gray-500);
+    display: inline-block;
 }
 
 .empty-state-icon {
@@ -635,4 +647,37 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
     background: var(--gray-400);
+}
+
+/* ============================================================
+   Responsive (Mobile)
+   ============================================================ */
+@media (max-width: 992px) {
+    .main-content {
+        padding: 1rem 0.5rem;
+    }
+
+    /* Disable horizontal sticky columns on smaller screens */
+    .first-col, .second-col, .third-col {
+        left: auto !important;
+    }
+    .action-col {
+        right: auto !important;
+    }
+    
+    #matrix-table tbody td.sticky-col,
+    #matrix-table tbody td.action-col {
+        position: static !important;
+        box-shadow: none !important;
+    }
+    
+    #matrix-table thead th.sticky-col,
+    #matrix-table thead th.action-col {
+        z-index: 2 !important;
+        box-shadow: none !important;
+    }
+
+    .second-col {
+        min-width: 200px;
+    }
 }

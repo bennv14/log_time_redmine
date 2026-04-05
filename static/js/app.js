@@ -238,7 +238,7 @@ function renderTable() {
     if (appState.tasks.length === 0) {
         const tr = document.createElement('tr');
         const colSpan = 4 + appState.dates.length;
-        tr.innerHTML = `<td colspan="${colSpan}">
+        tr.innerHTML = `<td colspan="${colSpan}" class="empty-state-td">
             <div class="empty-state">
                 <i class="bi bi-inbox empty-state-icon"></i>
                 <h5 class="empty-state-title">Chưa có dữ liệu</h5>
