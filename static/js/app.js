@@ -103,6 +103,40 @@ document.addEventListener('DOMContentLoaded', () => {
             renderApp();
         }
     });
+
+    // Add column hover effect
+    const tableContainer = document.getElementById('table-container');
+    if (tableContainer) {
+        tableContainer.addEventListener('mouseover', (e) => {
+            const td = e.target.closest('td, th');
+            if (!td) return;
+            const table = td.closest('table');
+            if (!table) return;
+            
+            const colIdx = td.cellIndex;
+            const rows = table.rows;
+            for (let i = 0; i < rows.length; i++) {
+                if (rows[i].cells[colIdx]) {
+                    rows[i].cells[colIdx].classList.add('col-hover');
+                }
+            }
+        });
+        
+        tableContainer.addEventListener('mouseout', (e) => {
+            const td = e.target.closest('td, th');
+            if (!td) return;
+            const table = td.closest('table');
+            if (!table) return;
+            
+            const colIdx = td.cellIndex;
+            const rows = table.rows;
+            for (let i = 0; i < rows.length; i++) {
+                if (rows[i].cells[colIdx]) {
+                    rows[i].cells[colIdx].classList.remove('col-hover');
+                }
+            }
+        });
+    }
 });
 
 function handleAddTask() {
@@ -204,9 +238,15 @@ function renderTable() {
     if (appState.tasks.length === 0) {
         const tr = document.createElement('tr');
         const colSpan = 4 + appState.dates.length;
-        tr.innerHTML = `<td colspan="${colSpan}" class="empty-state">
-            <i class="bi bi-inbox display-6 d-block mb-2 opacity-25"></i>
-            Chưa có dữ liệu. Vui lòng tải tệp CSV hoặc thêm công việc mới.
+        tr.innerHTML = `<td colspan="${colSpan}">
+            <div class="empty-state">
+                <i class="bi bi-inbox empty-state-icon"></i>
+                <h5 class="empty-state-title">Chưa có dữ liệu</h5>
+                <p class="empty-state-desc">Vui lòng tải lên tệp CSV timesheet hoặc thêm công việc thủ công để bắt đầu log time.</p>
+                <button class="btn btn-indigo" onclick="document.getElementById('csv-file').click()">
+                    <i class="bi bi-upload me-2"></i>Tải tệp CSV ngay
+                </button>
+            </div>
         </td>`;
         tbody.appendChild(tr);
     } else {
@@ -240,7 +280,7 @@ function renderTable() {
                 input.step = '0.5';
                 input.min = '0';
                 input.max = '24';
-                input.className = 'form-control form-control-sm text-center';
+                input.placeholder = ' ';
                 input.value = val > 0 ? val : '';
                 
                 input.addEventListener('change', (e) => {
@@ -259,14 +299,14 @@ function renderTable() {
 
             const btnEdit = document.createElement('button');
             btnEdit.type = 'button';
-            btnEdit.className = 'btn-edit';
+            btnEdit.className = 'btn-icon btn-edit me-1';
             btnEdit.title = 'Chỉnh sửa';
             btnEdit.innerHTML = '<i class="bi bi-pencil"></i>';
             btnEdit.onclick = () => handleEditTask(taskIndex);
 
             const btnDel = document.createElement('button');
             btnDel.type = 'button';
-            btnDel.className = 'btn-delete';
+            btnDel.className = 'btn-icon btn-delete';
             btnDel.title = 'Xóa';
             btnDel.innerHTML = '<i class="bi bi-trash3"></i>';
             btnDel.onclick = () => handleDeleteConfirm(taskIndex);
