@@ -31,6 +31,7 @@ let syncResultRows = [];
 /** @type {Array<{entry_id: string, issue_id: string, spent_on: string, hours: number, status: string, detail: string, requested_at: string}>} */
 let requestHistoryRows = [];
 let _syncInProgress = false;
+let _dragCounter = 0;
 
 function getSyncStats(rows = syncResultRows) {
     let pending = 0;
@@ -221,13 +222,11 @@ document.addEventListener('DOMContentLoaded', () => {
     csvFileInput.addEventListener('change', () => {
         const file = csvFileInput.files[0];
         if (file) {
-            const nameBox = document.getElementById('csv-file-name');
-            nameBox.querySelector('i').className = 'bi bi-file-earmark-text me-1 text-indigo';
-            nameBox.style.color = '';
-            document.getElementById('csv-file-name-text').textContent = file.name;
-            handleUpload();
+            setCsvFileNameDisplay(file.name);
+            uploadCsvFile(file);
         }
     });
+    initCsvDragAndDrop();
     syncForm.addEventListener('submit', handleSync);
     const btnRetryFailed = document.getElementById('btn-retry-failed');
     if (btnRetryFailed) {
@@ -401,10 +400,33 @@ function handleAddTask() {
     new bootstrap.Modal(document.getElementById('addTaskModal')).show();
 }
 
-async function handleUpload() {
-    const fileInput = document.getElementById('csv-file');
-    const file = fileInput.files[0];
+function setCsvFileNameDisplay(fileName) {
+    const nameBox = document.getElementById('csv-file-name');
+    if (!nameBox) return;
+    const icon = nameBox.querySelector('i');
+    if (icon) {
+        icon.className = 'bi bi-file-earmark-text me-1 text-indigo';
+    }
+    nameBox.style.color = '';
+    const textEl = document.getElementById('csv-file-name-text');
+    if (textEl) {
+        textEl.textContent = fileName;
+    }
+}
+
+function isCsvFile(file) {
+    if (!file) return false;
+    const lowerName = String(file.name || '').toLowerCase();
+    if (lowerName.endsWith('.csv')) return true;
+    return file.type === 'text/csv' || file.type === 'application/vnd.ms-excel';
+}
+
+async function uploadCsvFile(file) {
     if (!file) return;
+    if (!isCsvFile(file)) {
+        showToast('Lỗi', 'Chỉ chấp nhận tệp CSV.', 'warning');
+        return;
+    }
 
     const formData = new FormData();
     formData.append('file', file);
@@ -431,8 +453,63 @@ async function handleUpload() {
     } finally {
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-upload me-1"></i>Chọn CSV';
-        fileInput.value = '';
+        const fileInput = document.getElementById('csv-file');
+        if (fileInput) {
+            fileInput.value = '';
+        }
     }
+}
+
+function initCsvDragAndDrop() {
+    const body = document.body;
+    if (!body) return;
+    const dragEvents = ['dragenter', 'dragover', 'dragleave', 'drop'];
+    dragEvents.forEach((eventName) => {
+        body.addEventListener(eventName, (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+        });
+    });
+
+    body.addEventListener('dragenter', (event) => {
+        const hasFiles = event.dataTransfer && Array.from(event.dataTransfer.types || []).includes('Files');
+        if (!hasFiles) return;
+        _dragCounter += 1;
+        body.classList.add('dragover-csv');
+    });
+
+    body.addEventListener('dragover', (event) => {
+        const hasFiles = event.dataTransfer && Array.from(event.dataTransfer.types || []).includes('Files');
+        if (!hasFiles) return;
+        body.classList.add('dragover-csv');
+    });
+
+    body.addEventListener('dragleave', (event) => {
+        const hasFiles = event.dataTransfer && Array.from(event.dataTransfer.types || []).includes('Files');
+        if (!hasFiles) return;
+        _dragCounter = Math.max(0, _dragCounter - 1);
+        if (_dragCounter === 0) {
+            body.classList.remove('dragover-csv');
+        }
+    });
+
+    body.addEventListener('drop', async (event) => {
+        body.classList.remove('dragover-csv');
+        _dragCounter = 0;
+        const files = event.dataTransfer ? event.dataTransfer.files : null;
+        if (!files || files.length === 0) return;
+        if (files.length > 1) {
+            showToast('Lỗi', 'Chỉ hỗ trợ import 1 tệp CSV mỗi lần.', 'warning');
+            return;
+        }
+        const file = files[0];
+        if (!isCsvFile(file)) {
+            showToast('Lỗi', 'Chỉ chấp nhận tệp CSV.', 'warning');
+            return;
+        }
+        setCsvFileNameDisplay(file.name);
+        await uploadCsvFile(file);
+    });
 }
 
 function updateTotals() {
