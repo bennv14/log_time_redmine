@@ -2,9 +2,9 @@
    Color Variables & Theme
    ============================================================ */
 :root {
-    --primary: #2563eb;
-    --primary-hover: #1d4ed8;
-    --primary-soft: #eff6ff;
+    --primary: #4f46e5;
+    --primary-hover: #4338ca;
+    --primary-soft: #eef2ff;
     --secondary: #475569;
     --secondary-soft: #f1f5f9;
     --accent: #0ea5e9;
@@ -92,6 +92,68 @@ body {
 }
 
 /* ============================================================
+   Workflow Steps
+   ============================================================ */
+.workflow-steps {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+.workflow-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.9rem 1rem;
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-md);
+    background: white;
+    box-shadow: var(--shadow-sm);
+}
+
+.workflow-step-badge {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    color: var(--primary);
+    background: var(--primary-soft);
+    flex-shrink: 0;
+}
+
+.workflow-step-title {
+    font-weight: 700;
+    color: var(--gray-800);
+    font-size: 0.9rem;
+    line-height: 1.2;
+}
+
+.workflow-step-desc {
+    font-size: 0.78rem;
+    color: var(--gray-600);
+    margin-top: 0.15rem;
+}
+
+.workflow-step.is-active {
+    border-color: rgba(79, 70, 229, 0.35);
+    box-shadow: var(--shadow-md);
+}
+
+.workflow-step.is-done .workflow-step-badge {
+    color: white;
+    background: var(--success);
+}
+
+@media (max-width: 992px) {
+    .workflow-steps {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* ============================================================
    Cards (base override)
    ============================================================ */
 .card {
@@ -148,6 +210,17 @@ body {
 /* ============================================================
    Stat Cards (Summary Bar)
    ============================================================ */
+.summary-bar {
+    opacity: 0;
+    transform: translateY(6px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.summary-bar.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
 .stat-card {
     background: white;
     border-radius: var(--radius-md);
@@ -324,6 +397,18 @@ body {
     position: relative;
 }
 
+#table-container::after {
+    content: "";
+    position: sticky;
+    right: 0;
+    top: 0;
+    float: right;
+    width: 14px;
+    height: 100%;
+    background: linear-gradient(to left, rgba(148, 163, 184, 0.22), rgba(148, 163, 184, 0));
+    pointer-events: none;
+}
+
 #matrix-table {
     border-collapse: separate;
     border-spacing: 0;
@@ -366,6 +451,10 @@ body {
     background-color: var(--primary-soft);
 }
 
+#matrix-table tbody tr.row-focus td {
+    background-color: #e0edff;
+}
+
 /* Sticky columns */
 .sticky-col {
     position: sticky;
@@ -386,6 +475,11 @@ body {
 #matrix-table tbody td.col-hover,
 #matrix-table thead th.col-hover {
     background-color: var(--primary-soft) !important;
+}
+
+#matrix-table tbody td.col-focus,
+#matrix-table thead th.col-focus {
+    background-color: #dbeafe !important;
 }
 
 #matrix-table tbody tr:hover td.col-hover {
@@ -436,6 +530,11 @@ body {
     background-color: #fffbeb;
 }
 
+.today-col {
+    border-bottom: 2px solid var(--primary) !important;
+    color: var(--primary) !important;
+}
+
 #matrix-table thead th.weekend-col {
     color: var(--warning);
     background-color: #fffbeb;
@@ -449,7 +548,7 @@ body {
    Table Inputs
    ============================================================ */
 #matrix-table input[type="number"] {
-    width: 60px;
+    width: 80px;
     margin: 0 auto;
     appearance: textfield;
     -moz-appearance: textfield;
@@ -534,6 +633,8 @@ body {
     cursor: pointer;
     transition: all 0.2s;
     color: var(--gray-500);
+    min-width: 32px;
+    min-height: 32px;
 }
 
 .btn-edit:hover {
@@ -619,6 +720,17 @@ body {
     padding: 1rem 1.5rem;
 }
 
+/* Day total row */
+#matrix-table tr.day-total-row td {
+    background: #f8fafc;
+    font-weight: 700;
+    color: var(--gray-700);
+}
+
+#matrix-table tr.day-total-row td.sticky-col {
+    background: #f8fafc;
+}
+
 /* ============================================================
    Toast
    ============================================================ */
@@ -626,6 +738,204 @@ body {
     border-radius: var(--radius-md);
     border: none;
     box-shadow: var(--shadow-lg);
+}
+
+.undo-delete-banner {
+    position: fixed;
+    left: 50%;
+    bottom: 1.5rem;
+    transform: translateX(-50%);
+    z-index: 2200;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 0.8rem;
+    border-radius: 10px;
+    background: rgba(15, 23, 42, 0.92);
+    color: #f8fafc;
+    box-shadow: var(--shadow-lg);
+}
+
+.undo-delete-banner .btn {
+    padding: 0.25rem 0.6rem;
+}
+
+.sync-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(1px);
+    z-index: 2000;
+}
+
+.sync-overlay.show {
+    display: flex;
+}
+
+.sync-overlay-content {
+    min-width: 280px;
+    width: min(94vw, 68rem);
+    padding: 1.25rem 1.5rem;
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.98);
+    box-shadow: var(--shadow-lg);
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.75rem;
+}
+
+.sync-overlay-main {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.sync-overlay-text {
+    color: var(--gray-800);
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.sync-overlay-close-btn {
+    font-weight: 600;
+}
+
+.sync-overlay-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+.sync-overlay-results {
+    border: 1px solid rgba(226, 232, 240, 0.25);
+    border-radius: 10px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.98);
+}
+
+.sync-overlay-results-title {
+    padding: 0.6rem 0.75rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+    color: var(--gray-700);
+    background: #f8fafc;
+}
+
+.sync-overlay-results-table-wrap {
+    max-height: min(52vh, 26rem);
+    overflow: auto;
+}
+
+.sync-overlay-results-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    background: #f8fafc;
+}
+
+.sync-overlay-results-table td {
+    font-size: 0.8rem;
+    vertical-align: top;
+}
+
+.sync-overlay-results-table,
+.request-history-table {
+    width: 100%;
+    table-layout: fixed;
+}
+
+.sync-overlay-results-table th:nth-child(1),
+.sync-overlay-results-table td:nth-child(1) {
+    width: 6rem;
+}
+
+.sync-overlay-results-table th:nth-child(2),
+.sync-overlay-results-table td:nth-child(2) {
+    width: 7.5rem;
+}
+
+.sync-overlay-results-table th:nth-child(3),
+.sync-overlay-results-table td:nth-child(3) {
+    width: 4.5rem;
+}
+
+.sync-overlay-results-table th:nth-child(4),
+.sync-overlay-results-table td:nth-child(4) {
+    width: 7rem;
+}
+
+.sync-overlay-results-table td:nth-child(5) {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+.status-inline-icon {
+    width: 0.8rem;
+    height: 0.8rem;
+    margin-top: -0.1rem;
+    margin-right: 0.2rem;
+}
+
+.request-history-wrap {
+    max-height: 18rem;
+    overflow: auto;
+}
+
+.request-history-overlay-content {
+    width: min(94vw, 74rem);
+}
+
+.request-history-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: #f8fafc;
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+
+.request-history-table td {
+    font-size: 0.8rem;
+    vertical-align: top;
+}
+
+.request-history-table th:nth-child(1),
+.request-history-table td:nth-child(1) {
+    width: 10.5rem;
+}
+
+.request-history-table th:nth-child(2),
+.request-history-table td:nth-child(2) {
+    width: 6rem;
+}
+
+.request-history-table th:nth-child(3),
+.request-history-table td:nth-child(3) {
+    width: 7.5rem;
+}
+
+.request-history-table th:nth-child(4),
+.request-history-table td:nth-child(4) {
+    width: 4.5rem;
+}
+
+.request-history-table th:nth-child(5),
+.request-history-table td:nth-child(5) {
+    width: 7rem;
+}
+
+.request-history-table td:nth-child(6) {
+    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 
 /* ============================================================

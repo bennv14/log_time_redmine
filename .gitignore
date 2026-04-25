@@ -1,2 +1,5 @@
 .venv/
 .DS_Store
+logs/*
+!logs/.gitkeep
+redmine_time_client.egg-info/

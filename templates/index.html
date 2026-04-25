@@ -32,9 +32,34 @@
 
     <div class="main-content">
 
-        <!-- Controls Row -->
+        <!-- Workflow Steps -->
+        <div class="workflow-steps mb-4">
+            <div class="workflow-step" id="step-1">
+                <div class="workflow-step-badge">1</div>
+                <div class="workflow-step-body">
+                    <div class="workflow-step-title">Tải CSV</div>
+                    <div class="workflow-step-desc">Chọn tệp timesheet để hệ thống tự xử lý</div>
+                </div>
+            </div>
+            <div class="workflow-step" id="step-2">
+                <div class="workflow-step-badge">2</div>
+                <div class="workflow-step-body">
+                    <div class="workflow-step-title">Xem lại & chỉnh sửa</div>
+                    <div class="workflow-step-desc">Điền/điều chỉnh giờ trực tiếp trong bảng</div>
+                </div>
+            </div>
+            <div class="workflow-step" id="step-3">
+                <div class="workflow-step-badge">3</div>
+                <div class="workflow-step-body">
+                    <div class="workflow-step-title">Đồng bộ Redmine</div>
+                    <div class="workflow-step-desc">Nhập API key và gửi các bản ghi giờ làm việc</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step Actions -->
         <div class="row g-3 mb-4">
-            <div class="col-md-6">
+            <div class="col-lg-6">
                 <div class="card control-card h-100">
                     <div class="card-body">
                         <div class="control-card-header mb-3">
@@ -42,37 +67,57 @@
                                 <i class="bi bi-file-earmark-arrow-up text-indigo"></i>
                             </div>
                             <div>
-                                <h6 class="control-card-title">Tải tệp CSV</h6>
-                                <p class="control-card-desc">Nhập dữ liệu từ timesheet Excel</p>
+                                <h6 class="control-card-title mb-0">Bước 1: Tải tệp CSV</h6>
+                                <p class="control-card-desc">Sau khi chọn tệp, hệ thống sẽ tự động xử lý.</p>
                             </div>
                         </div>
                         <div class="d-flex align-items-center gap-2">
+                            <label for="csv-file" class="visually-hidden">Chọn tệp CSV</label>
                             <input type="file" id="csv-file" accept=".csv" class="d-none">
                             <div class="form-control form-control-sm flex-grow-1 text-truncate" id="csv-file-name" style="cursor:pointer; color: var(--bs-secondary-color);">
                                 <i class="bi bi-file-earmark me-1"></i>
                                 <span id="csv-file-name-text">Chưa chọn file...</span>
                             </div>
                             <button type="button" class="btn btn-indigo btn-sm text-nowrap" id="btn-upload">
-                                <i class="bi bi-upload me-1"></i>Tải lên
+                                <i class="bi bi-upload me-1"></i>Chọn CSV
                             </button>
                         </div>
                     </div>
                 </div>
             </div>
-            <div class="col-md-6">
+            <div class="col-lg-6">
                 <div class="card control-card h-100">
                     <div class="card-body">
                         <div class="control-card-header mb-3">
                             <div class="control-card-icon bg-purple-soft">
                                 <i class="bi bi-cloud-arrow-up text-purple"></i>
                             </div>
-                            <div>
-                                <h6 class="control-card-title">Đồng bộ Redmine</h6>
-                                <p class="control-card-desc">Gửi dữ liệu giờ làm việc lên Redmine</p>
+                            <div class="flex-grow-1">
+                                <h6 class="control-card-title mb-0">Bước 3: Đồng bộ Redmine</h6>
+                                <p class="control-card-desc mb-0">
+                                    Sẽ gửi: <span id="sync-entries-count" class="fw-semibold">0</span> bản ghi
+                                    <span id="sync-compact-badge" class="ms-2" hidden></span>
+                                </p>
                             </div>
+                            <button type="button" class="btn btn-outline-danger btn-sm" id="btn-retry-failed" disabled>
+                                <i class="bi bi-arrow-clockwise me-1"></i>Gửi lại bản lỗi
+                            </button>
+                            <button type="button" class="btn btn-outline-primary btn-sm" id="btn-open-request-history">
+                                <i class="bi bi-clock-history me-1"></i>Xem request đã gửi
+                            </button>
                         </div>
-                        <form id="sync-form" class="d-flex align-items-center gap-2">
-                            <input class="form-control form-control-sm flex-grow-1" type="password" id="api-key" placeholder="Nhập API Key Redmine" required>
+
+                        <form id="sync-form" class="d-flex flex-wrap align-items-center gap-2">
+                            <label for="api-key" class="visually-hidden">API Key Redmine</label>
+                            <div class="input-group input-group-sm flex-grow-1" style="min-width: 260px;">
+                                <input class="form-control" type="password" id="api-key" placeholder="Nhập API Key Redmine" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+                                <button class="btn btn-outline-secondary" type="button" id="btn-toggle-api-key" aria-label="Hiện hoặc ẩn API key">
+                                    <i class="bi bi-eye"></i>
+                                </button>
+                                <button class="btn btn-outline-secondary" type="button" id="btn-clear-api-key" aria-label="Xóa API key">
+                                    <i class="bi bi-x-lg"></i>
+                                </button>
+                            </div>
                             <button type="submit" class="btn btn-purple btn-sm text-nowrap" id="btn-sync" disabled>
                                 <i class="bi bi-arrow-repeat me-1"></i>Đồng bộ
                             </button>
@@ -83,7 +128,7 @@
         </div>
 
         <!-- Summary Stats -->
-        <div id="summary-bar" class="row g-4 mb-4" style="display: none;">
+        <div id="summary-bar" class="row g-4 mb-4 summary-bar" style="display: none;">
             <div class="col-6 col-md-3">
                 <div class="stat-card">
                     <div class="stat-icon bg-primary-soft text-primary">
@@ -108,23 +153,23 @@
             </div>
             <div class="col-6 col-md-3">
                 <div class="stat-card">
-                    <div class="stat-icon bg-warning text-white" style="--bs-bg-opacity: .1; color: var(--warning) !important;">
-                        <i class="bi bi-list-check"></i>
-                    </div>
-                    <div class="stat-info">
-                        <div class="stat-label">Tổng số tasks</div>
-                        <div class="stat-value" id="summary-tasks">0</div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-6 col-md-3">
-                <div class="stat-card">
                     <div class="stat-icon bg-success-soft text-success">
                         <i class="bi bi-clock-fill"></i>
                     </div>
                     <div class="stat-info">
                         <div class="stat-label">Tổng số giờ</div>
                         <div class="stat-value text-success" id="summary-hours">0.0</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="stat-card">
+                    <div class="stat-icon bg-danger-soft text-danger">
+                        <i class="bi bi-exclamation-circle"></i>
+                    </div>
+                    <div class="stat-info">
+                        <div class="stat-label">Task thiếu issue id</div>
+                        <div class="stat-value text-danger" id="summary-missing-issue">0</div>
                     </div>
                 </div>
             </div>
@@ -139,7 +184,10 @@
                             <div class="bg-primary-soft text-primary p-2 rounded">
                                 <i class="bi bi-table"></i>
                             </div>
-                            <span class="fw-semibold text-gray-800">Ma trận công việc</span>
+                            <div class="d-flex flex-column">
+                                <span class="fw-semibold text-gray-800">Ma trận công việc</span>
+                                <small class="text-muted">Tháng hiện tại: <span id="current-month-label">--/----</span></small>
+                            </div>
                         </div>
                         <button type="button" class="btn btn-outline-indigo btn-sm" id="btn-add-task">
                             <i class="bi bi-plus-lg me-1"></i>Thêm
@@ -191,11 +239,11 @@
                 </div>
                 <div class="modal-body">
                     <div class="mb-3">
-                        <label class="form-label fw-semibold" style="font-size:0.85rem;">Issue ID</label>
+                        <label class="form-label fw-semibold" for="add-task-id" style="font-size:0.85rem;">Issue ID</label>
                         <input type="text" class="form-control form-control-sm" id="add-task-id" placeholder="Nhập Issue ID">
                     </div>
                     <div class="mb-1">
-                        <label class="form-label fw-semibold" style="font-size:0.85rem;">Tên</label>
+                        <label class="form-label fw-semibold" for="add-task-name" style="font-size:0.85rem;">Tên</label>
                         <input type="text" class="form-control form-control-sm" id="add-task-name" placeholder="Nhập tên">
                     </div>
                 </div>
@@ -221,11 +269,11 @@
                 </div>
                 <div class="modal-body">
                     <div class="mb-3">
-                        <label class="form-label fw-semibold" style="font-size:0.85rem;">Issue ID</label>
+                        <label class="form-label fw-semibold" for="edit-task-id" style="font-size:0.85rem;">Issue ID</label>
                         <input type="text" class="form-control form-control-sm" id="edit-task-id" placeholder="Nhập Issue ID">
                     </div>
                     <div class="mb-1">
-                        <label class="form-label fw-semibold" style="font-size:0.85rem;">Tên</label>
+                        <label class="form-label fw-semibold" for="edit-task-name" style="font-size:0.85rem;">Tên</label>
                         <input type="text" class="form-control form-control-sm" id="edit-task-name" placeholder="Nhập tên">
                     </div>
                 </div>
@@ -239,28 +287,9 @@
         </div>
     </div>
 
-    <!-- Delete Confirm Modal -->
-    <div class="modal fade" id="deleteConfirmModal" tabindex="-1" aria-labelledby="deleteConfirmModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-centered modal-sm">
-            <div class="modal-content">
-                <div class="modal-header border-0 pb-0">
-                    <h6 class="modal-title fw-semibold" id="deleteConfirmModalLabel">
-                        <i class="bi bi-trash3 me-2 text-danger"></i>Xác nhận xóa
-                    </h6>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Đóng"></button>
-                </div>
-                <div class="modal-body pt-2">
-                    <p class="mb-1" style="font-size:0.875rem;">Bạn có chắc muốn xóa công việc:</p>
-                    <p class="fw-semibold mb-0" id="delete-task-label" style="font-size:0.875rem; color: var(--gray-800);"></p>
-                </div>
-                <div class="modal-footer border-0 pt-0">
-                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Hủy</button>
-                    <button type="button" class="btn btn-sm btn-danger" id="btn-confirm-delete">
-                        <i class="bi bi-trash3 me-1"></i>Xóa
-                    </button>
-                </div>
-            </div>
-        </div>
+    <div id="undo-delete-banner" class="undo-delete-banner" role="status" aria-live="polite" hidden>
+        <span id="undo-delete-text">Đã xóa công việc.</span>
+        <button type="button" class="btn btn-sm btn-light" id="btn-undo-delete">Hoàn tác</button>
     </div>
 
     <!-- Toast -->
@@ -272,6 +301,82 @@
                 <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Đóng"></button>
             </div>
             <div class="toast-body pt-2 pb-3 fw-medium" id="toast-message"></div>
+        </div>
+    </div>
+
+    <div id="sync-overlay" class="sync-overlay" aria-hidden="true">
+        <div class="sync-overlay-content" role="dialog" aria-modal="true" aria-labelledby="sync-overlay-text">
+            <div class="sync-overlay-main">
+                <div id="sync-overlay-spinner" class="spinner-border text-primary" role="status" aria-hidden="true"></div>
+                <div id="sync-overlay-text" class="sync-overlay-text">Đang đồng bộ dữ liệu...</div>
+            </div>
+            <div id="sync-overlay-results" class="sync-overlay-results" hidden>
+                <div class="sync-overlay-results-title">Kết quả đồng bộ Redmine</div>
+                <div class="sync-overlay-results-table-wrap">
+                    <table class="table table-sm mb-0 align-middle sync-overlay-results-table">
+                        <thead>
+                            <tr>
+                                <th>Issue</th>
+                                <th>Ngày</th>
+                                <th class="text-end">Giờ</th>
+                                <th>Trạng thái</th>
+                                <th>Chi tiết</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sync-overlay-results-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="sync-overlay-actions" id="sync-overlay-actions" hidden>
+                <button type="button" class="btn btn-sm btn-outline-danger" id="btn-sync-overlay-retry-failed" disabled>
+                    <i class="bi bi-arrow-clockwise me-1"></i>Đồng bộ lại bản lỗi
+                </button>
+                <button type="button" class="btn btn-sm btn-primary sync-overlay-close-btn" id="btn-sync-overlay-close">
+                    Đóng
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="request-history-overlay" class="sync-overlay" aria-hidden="true">
+        <div class="sync-overlay-content request-history-overlay-content" role="dialog" aria-modal="true" aria-labelledby="request-history-overlay-title">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <div id="request-history-overlay-title" class="sync-overlay-text">Lịch sử request đã gửi</div>
+                    <div class="small text-muted">Chỉ hiển thị trong session hiện tại</div>
+                </div>
+                <span class="badge text-bg-light" id="request-history-count">0</span>
+            </div>
+            <div class="sync-overlay-results">
+                <div class="sync-overlay-results-title">Danh sách request</div>
+                <div class="sync-overlay-results-table-wrap">
+                    <table class="table table-sm mb-0 align-middle request-history-table">
+                        <thead>
+                            <tr>
+                                <th>Thời gian</th>
+                                <th>Issue</th>
+                                <th>Ngày</th>
+                                <th class="text-end">Giờ</th>
+                                <th>Trạng thái</th>
+                                <th>Chi tiết</th>
+                            </tr>
+                        </thead>
+                        <tbody id="request-history-body">
+                            <tr id="request-history-empty-row">
+                                <td colspan="6" class="text-center text-muted py-4">Chưa có request nào được gửi.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="sync-overlay-actions">
+                <button type="button" class="btn btn-sm btn-outline-danger" id="btn-request-history-retry-failed" disabled>
+                    <i class="bi bi-arrow-clockwise me-1"></i>Đồng bộ lại bản lỗi
+                </button>
+                <button type="button" class="btn btn-sm btn-primary sync-overlay-close-btn" id="btn-request-history-close">
+                    Đóng
+                </button>
+            </div>
         </div>
     </div>
 

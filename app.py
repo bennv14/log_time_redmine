@@ -1,15 +1,64 @@
-import os
+import argparse
 import csv
-import re
+import json
 import logging
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from flask import Flask, request, jsonify, render_template
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 from flask_cors import CORS
-import requests
+
+from redmine_time_client import (
+    AbstractRedmineTimeClient,
+    TimeEntryResult,
+    backend_requires_api_key,
+    create_redmine_time_client,
+    parse_redmine_backend_from_env,
+)
 
 app = Flask(__name__)
 CORS(app)
 logging.basicConfig(level=logging.INFO)
+
+DEFAULT_ACTIVITY_ID = 9
+
+
+def _apply_redmine_backend_config(flask_app: Flask) -> None:
+    """Resolve REDMINE_MOCK once per process; set REDMINE_BACKEND on app config."""
+    flask_app.config["REDMINE_BACKEND"] = parse_redmine_backend_from_env()
+
+
+_apply_redmine_backend_config(app)
+
+_LOGS_DIR = Path(__file__).resolve().parent / "logs"
+_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+_time_entry_logger = logging.getLogger("app.time_entry")
+_time_entry_logger.setLevel(logging.INFO)
+if not _time_entry_logger.handlers:
+    _te_handler = logging.FileHandler(
+        _LOGS_DIR / "redmine_time_entry.log", encoding="utf-8"
+    )
+    _te_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _time_entry_logger.addHandler(_te_handler)
+_time_entry_logger.propagate = False
+
+
+def _log_time_entry_result(entry: Dict[str, Any], res: TimeEntryResult) -> None:
+    record: Dict[str, Any] = {
+        "entry_id": str(entry.get("entry_id", "")),
+        "issue_id": entry.get("issue_id"),
+        "spent_on": entry.get("spent_on"),
+        "hours": entry.get("hours"),
+        "activity_id": entry.get("activity_id", DEFAULT_ACTIVITY_ID),
+        "ok": res.ok,
+        "status_code": res.status_code,
+        "error": res.error_message,
+        "response_text": res.response_text,
+    }
+    _time_entry_logger.info(json.dumps(record, ensure_ascii=False))
 
 def extract_task_id(url):
     match = re.search(r'/(\d+)$', url)
@@ -136,62 +185,102 @@ def upload_csv():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
-@app.route('/api/sync', methods=['POST'])
-def sync_redmine():
-    data = request.json
-    api_key = data.get('apiKey')
-    entries = data.get('entries', [])
-    logging.info(f"API Key: {api_key}")
-    logging.info(f"Entries: {entries}")
-    
-    if not api_key:
-        return jsonify({"error": "Vui lòng nhập khóa API"}), 400
-    
-    headers = {
-        "Content-Type": "application/json",
-        "X-Redmine-API-Key": api_key
-    }
-    
-    success_count = 0
-    errors = []
-    
-    for entry in entries:
-        payload = {
-            "time_entry": {
-                "issue_id": entry.get("issue_id"),
-                "spent_on": entry.get("spent_on"),
-                "hours": entry.get("hours"),
-                "activity_id": 9,
-            }
-        }
-        
-        url = "https://redmine.jprep.jp/redmine/time_entries.json"
-        app.logger.info(f"Sending request to {url} with payload: {payload}")
-        
-        try:
-            response = requests.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=15
-            )
-            app.logger.info(f"Response status: {response.status_code}, body: {response.text}")
-            if response.status_code in (200, 201):
-                success_count += 1
-            else:
-                errors.append(f"Task {entry.get('issue_id')} on {entry.get('spent_on')}: {response.text}")
-        except Exception as e:
-            app.logger.error(f"Request failed: {str(e)}")
-            errors.append(f"Task {entry.get('issue_id')} on {entry.get('spent_on')}: {str(e)}")
-            
-    if errors:
-        return jsonify({
-            "status": "partial_success" if success_count > 0 else "error",
-            "success_count": success_count,
-            "errors": errors
-        }), 207 if success_count > 0 else 400
-        
-    return jsonify({"status": "success", "success_count": success_count})
+_SSE_MAX_WORKERS = 8
 
-if __name__ == '__main__':
-    app.run(debug=True, host = '0.0.0.0', port=5000)
+
+def _format_sse(data: Dict[str, Any]) -> str:
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _post_one(
+    client: AbstractRedmineTimeClient, entry: Dict[str, Any]
+) -> Tuple[str, Dict[str, Any], TimeEntryResult]:
+    eid = str(entry.get("entry_id", ""))
+    try:
+        issue = entry.get("issue_id")
+        spent = entry.get("spent_on")
+        hours = float(entry.get("hours", 0))
+        act = int(entry.get("activity_id", DEFAULT_ACTIVITY_ID))
+        res = client.post_time_entry(issue, str(spent), hours, act)
+        _log_time_entry_result(entry, res)
+        return eid, entry, res
+    except Exception as e:
+        app.logger.error("entry task failed: %s", e)
+        res = TimeEntryResult(ok=False, error_message=str(e))
+        _log_time_entry_result(entry, res)
+        return eid, entry, res
+
+
+@app.route("/api/sync/stream", methods=["POST"])
+def sync_redmine_stream():
+    data = request.get_json(silent=True) or {}
+    api_key = data.get("apiKey")
+    entries: List[Dict[str, Any]] = data.get("entries", [])
+
+    backend = app.config["REDMINE_BACKEND"]
+    if backend_requires_api_key(backend) and not api_key:
+        return jsonify({"error": "Vui lòng nhập khóa API"}), 400
+    if not entries:
+        return jsonify({"error": "Không có bản ghi cần đồng bộ"}), 400
+    for e in entries:
+        if not e.get("entry_id"):
+            return jsonify({"error": "Mỗi entry cần có entry_id (định danh ổn định từ client)"}), 400
+
+    def generate():
+        client: AbstractRedmineTimeClient = create_redmine_time_client(
+            backend,
+            api_key=api_key,
+        )
+        n = len(entries)
+        max_workers = min(_SSE_MAX_WORKERS, max(1, n))
+        success = 0
+        failed = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_map = {pool.submit(_post_one, client, e): e for e in entries}
+            for fut in as_completed(future_map):
+                eid, orig, res = fut.result()
+                if res.ok:
+                    success += 1
+                else:
+                    failed += 1
+                yield _format_sse(
+                    {
+                        "type": "result",
+                        "entry_id": eid,
+                        "issue_id": orig.get("issue_id"),
+                        "spent_on": orig.get("spent_on"),
+                        "hours": orig.get("hours"),
+                        "ok": res.ok,
+                        "status_code": res.status_code,
+                        "error": res.error_message,
+                    }
+                )
+        yield _format_sse(
+            {
+                "type": "done",
+                "total": n,
+                "success": success,
+                "failed": failed,
+            }
+        )
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Redmine time entry UI")
+    parser.add_argument(
+        "--mock",
+        action="store_true",
+        help="Use MockRedmineTimeClient (no real HTTP, API key optional).",
+    )
+    args = parser.parse_args()
+    if args.mock:
+        app.config["REDMINE_BACKEND"] = "mock"
+    app.run(debug=True, host="0.0.0.0", port=5001)
