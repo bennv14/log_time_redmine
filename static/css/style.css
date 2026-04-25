@@ -43,6 +43,12 @@ body {
     min-height: 100vh;
 }
 
+body.dragover-csv {
+    outline: 3px dashed var(--indigo);
+    outline-offset: -10px;
+    background-color: #eef2ff;
+}
+
 /* ============================================================
    Navbar
    ============================================================ */
