@@ -118,6 +118,9 @@
                                     <i class="bi bi-x-lg"></i>
                                 </button>
                             </div>
+                            <button type="button" class="btn btn-outline-primary btn-sm text-nowrap" id="btn-check-diff">
+                                <i class="bi bi-search me-1"></i>Check
+                            </button>
                             <button type="submit" class="btn btn-purple btn-sm text-nowrap" id="btn-sync" disabled>
                                 <i class="bi bi-arrow-repeat me-1"></i>Đồng bộ
                             </button>
@@ -295,11 +298,11 @@
     <!-- Toast -->
     <div class="toast-container position-fixed bottom-0 end-0 p-4">
         <div id="liveToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
-            <div class="toast-header border-0 pb-0">
-                <i class="bi bi-bell-fill me-2 text-primary"></i>
-                <strong class="me-auto" id="toast-title">Thông báo</strong>
-                <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Đóng"></button>
-            </div>
+<div class="toast-header border-0 pb-0">
+    <i class="bi bi-bell-fill me-2 text-primary" id="toast-icon"></i>
+    <strong class="me-auto" id="toast-title">Thông báo</strong>
+    <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Đóng"></button>
+  </div>
             <div class="toast-body pt-2 pb-3 fw-medium" id="toast-message"></div>
         </div>
     </div>
@@ -353,17 +356,18 @@
                     <table class="table table-sm mb-0 align-middle request-history-table">
                         <thead>
                             <tr>
-                                <th>Thời gian</th>
+                                <th style="width:2rem"></th>
                                 <th>Issue</th>
                                 <th>Ngày</th>
                                 <th class="text-end">Giờ</th>
                                 <th>Trạng thái</th>
-                                <th>Chi tiết</th>
+                                <th>Lần gửi gần nhất</th>
+                                <th>Lượt gửi</th>
                             </tr>
                         </thead>
                         <tbody id="request-history-body">
                             <tr id="request-history-empty-row">
-                                <td colspan="6" class="text-center text-muted py-4">Chưa có request nào được gửi.</td>
+                                <td colspan="7" class="text-center text-muted py-4">Chưa có request nào được gửi.</td>
                             </tr>
                         </tbody>
                     </table>
@@ -378,6 +382,107 @@
                 </button>
             </div>
         </div>
+    </div>
+
+    <div id="check-diff-overlay" class="sync-overlay" aria-hidden="true">
+        <div class="sync-overlay-content request-history-overlay-content" role="dialog" aria-modal="true" aria-labelledby="check-diff-overlay-title">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <div id="check-diff-overlay-title" class="sync-overlay-text">Kết quả check chênh lệch</div>
+                    <div class="small text-muted">So sánh giờ theo Issue + Ngày</div>
+                </div>
+                <span class="badge text-bg-light" id="check-diff-count">0</span>
+            </div>
+            <div id="check-diff-summary" class="check-diff-summary" hidden>
+                <div class="check-diff-summary-stats">
+                    <div class="check-diff-stat check-diff-stat-same">
+                        <i class="bi bi-check-circle-fill"></i>
+                        <span class="check-diff-stat-count" id="cds-same-count">0</span>
+                        <span class="check-diff-stat-label">Giống nhau</span>
+                    </div>
+                    <div class="check-diff-stat check-diff-stat-diff">
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        <span class="check-diff-stat-count" id="cds-diff-count">0</span>
+                        <span class="check-diff-stat-label">Khác nhau</span>
+                    </div>
+                    <div class="check-diff-stat check-diff-stat-resolved">
+                        <i class="bi bi-arrow-left-right"></i>
+                        <span class="check-diff-stat-count" id="cds-resolved-count">0</span>
+                        <span class="check-diff-stat-label">Đã xử lý</span>
+                    </div>
+                    <div class="check-diff-stat check-diff-stat-error">
+                        <i class="bi bi-x-circle-fill"></i>
+                        <span class="check-diff-stat-count" id="cds-error-count">0</span>
+                        <span class="check-diff-stat-label">Lỗi</span>
+                    </div>
+                </div>
+                <div class="check-diff-summary-totals">
+                    <span>Tổng Web: <strong id="cds-total-web">0.00</strong>h</span>
+                    <span class="check-diff-summary-sep">|</span>
+                    <span>Tổng Redmine: <strong id="cds-total-redmine">0.00</strong>h</span>
+                    <span class="check-diff-summary-sep">|</span>
+                    <span>Chênh lệch: <strong id="cds-total-delta">0.00</strong>h</span>
+                </div>
+            </div>
+            <div class="sync-overlay-results">
+                <div class="sync-overlay-results-title">Danh sách so sánh</div>
+                <div class="sync-overlay-results-table-wrap">
+                    <table class="table table-sm mb-0 align-middle check-diff-table">
+                        <thead>
+                            <tr>
+                                <th>Issue</th>
+                                <th>Ngày</th>
+                                <th class="text-end">Giờ Web</th>
+                                <th class="text-end">Giờ Redmine</th>
+                                <th class="text-end">Chênh lệch</th>
+                                <th>Trạng thái</th>
+                                <th>Hành động</th>
+                            </tr>
+                        </thead>
+                        <tbody id="check-diff-body">
+                            <tr id="check-diff-empty-row">
+                                <td colspan="7" class="text-center text-muted py-4">Chưa có dữ liệu check.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="sync-overlay-actions">
+                <button type="button" class="btn btn-sm btn-primary sync-overlay-close-btn" id="btn-check-diff-close">
+                    Đóng
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="diff-popover" class="diff-popover" hidden>
+        <div class="diff-popover-header">
+            <span class="diff-popover-title" id="diff-popover-title">So sánh</span>
+            <button type="button" class="diff-popover-close" id="diff-popover-close">&times;</button>
+        </div>
+        <div class="diff-popover-body">
+            <div class="diff-popover-row">
+                <span class="diff-popover-label">Giờ Web</span>
+                <span class="diff-popover-value" id="diff-popover-web">0.00h</span>
+            </div>
+            <div class="diff-popover-row">
+                <span class="diff-popover-label">Giờ Redmine</span>
+                <span class="diff-popover-value" id="diff-popover-redmine">0.00h</span>
+            </div>
+            <div class="diff-popover-row">
+                <span class="diff-popover-label">Chênh lệch</span>
+                <span class="diff-popover-value" id="diff-popover-delta">0.00h</span>
+            </div>
+        </div>
+        <div class="diff-popover-actions" id="diff-popover-actions">
+            <button type="button" class="btn btn-sm btn-outline-primary" id="diff-popover-btn-web">
+                <i class="bi bi-arrow-up-circle me-1"></i>Update Web
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-success" id="diff-popover-btn-redmine">
+                <i class="bi bi-arrow-down-circle me-1"></i>Nhận Redmine
+            </button>
+        </div>
+        <div class="diff-popover-status" id="diff-popover-status" hidden></div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>

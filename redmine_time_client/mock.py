@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import random
 import time
-from typing import List, Optional, Sequence, Union
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-from redmine_time_client.base import AbstractRedmineTimeClient, TimeEntryResult
+from redmine_time_client.base import (
+    AbstractRedmineTimeClient,
+    RedmineTimeEntry,
+    TimeEntryResult,
+)
 
 
 def _default_success() -> TimeEntryResult:
@@ -57,6 +62,7 @@ class MockRedmineTimeClient(AbstractRedmineTimeClient):
         *,
         responses: Optional[Sequence[TimeEntryResult]] = None,
         default_error_rate: float = 0.3,
+        existing_entries: Optional[Sequence[RedmineTimeEntry]] = None,
     ) -> None:
         self._sequence: Optional[List[TimeEntryResult]] = (
             list(responses) if responses is not None else None
@@ -64,6 +70,13 @@ class MockRedmineTimeClient(AbstractRedmineTimeClient):
         self._call_index = 0
         self._default_error_rate = default_error_rate
         self._default_error_pool = _default_error_pool()
+        self._next_entry_id = 1000
+        self._entries: Dict[Tuple[str, str], List[RedmineTimeEntry]] = {}
+        if existing_entries:
+            for entry in existing_entries:
+                key = (str(entry.issue_id), entry.spent_on)
+                self._entries.setdefault(key, []).append(entry)
+                self._next_entry_id = max(self._next_entry_id, int(entry.id) + 1)
 
     def post_time_entry(
         self,
@@ -76,8 +89,34 @@ class MockRedmineTimeClient(AbstractRedmineTimeClient):
         if not self._sequence:
             if random.random() < self._default_error_rate:
                 return random.choice(self._default_error_pool)
-            return _default_success()
+            result = _default_success()
+            self._store_entry(issue_id, spent_on, hours)
+            return result
         r = self._sequence[self._call_index % len(self._sequence)]
         self._call_index += 1
+        if r.ok:
+            self._store_entry(issue_id, spent_on, hours)
         return r
+
+    def list_time_entries(
+        self,
+        issue_id: Union[int, str],
+        spent_on: str,
+    ) -> List[RedmineTimeEntry]:
+        key = (str(issue_id), spent_on)
+        return list(self._entries.get(key, []))
+
+    def _store_entry(self, issue_id: Union[int, str], spent_on: str, hours: float) -> None:
+        key = (str(issue_id), spent_on)
+        created_on = datetime.now(timezone.utc).isoformat()
+        self._entries.setdefault(key, []).append(
+            RedmineTimeEntry(
+                id=self._next_entry_id,
+                issue_id=issue_id,
+                spent_on=spent_on,
+                hours=float(hours),
+                created_on=created_on,
+            )
+        )
+        self._next_entry_id += 1
 

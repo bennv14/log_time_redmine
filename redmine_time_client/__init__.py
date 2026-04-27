@@ -1,4 +1,8 @@
-from redmine_time_client.base import AbstractRedmineTimeClient, TimeEntryResult
+from redmine_time_client.base import (
+    AbstractRedmineTimeClient,
+    RedmineTimeEntry,
+    TimeEntryResult,
+)
 from redmine_time_client.factory import (
     RedmineBackend,
     backend_requires_api_key,
@@ -10,6 +14,7 @@ from redmine_time_client.mock import MockRedmineTimeClient
 
 __all__ = [
     "AbstractRedmineTimeClient",
+    "RedmineTimeEntry",
     "TimeEntryResult",
     "HttpRedmineTimeClient",
     "MockRedmineTimeClient",

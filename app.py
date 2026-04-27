@@ -211,6 +211,81 @@ def _post_one(
         return eid, entry, res
 
 
+def _build_check_items(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for raw in entries:
+        issue_id = str(raw.get("issue_id", "")).strip()
+        spent_on = str(raw.get("spent_on", "")).strip()
+        if not issue_id or not spent_on:
+            continue
+        key = (issue_id, spent_on)
+        item = grouped.get(key)
+        if item is None:
+            item = {
+                "issue_id": issue_id,
+                "spent_on": spent_on,
+                "web_hours": 0.0,
+                "activity_id": int(raw.get("activity_id", DEFAULT_ACTIVITY_ID)),
+            }
+            grouped[key] = item
+        item["web_hours"] += float(raw.get("hours", 0) or 0)
+    return list(grouped.values())
+
+
+@app.route("/api/sync/check", methods=["POST"])
+def check_redmine_diff():
+    data = request.get_json(silent=True) or {}
+    api_key = data.get("apiKey")
+    entries: List[Dict[str, Any]] = data.get("entries", [])
+
+    backend = app.config["REDMINE_BACKEND"]
+    if backend_requires_api_key(backend) and not api_key:
+        return jsonify({"error": "Vui lòng nhập khóa API"}), 400
+    if not entries:
+        return jsonify({"error": "Không có bản ghi để kiểm tra"}), 400
+
+    client: AbstractRedmineTimeClient = create_redmine_time_client(
+        backend,
+        api_key=api_key,
+    )
+    output: List[Dict[str, Any]] = []
+
+    for item in _build_check_items(entries):
+        issue_id = item["issue_id"]
+        spent_on = item["spent_on"]
+        web_hours = float(item["web_hours"])
+        try:
+            redmine_entries = client.list_time_entries(issue_id=issue_id, spent_on=spent_on)
+            redmine_hours = float(sum(float(e.hours or 0) for e in redmine_entries))
+            delta = round(web_hours - redmine_hours, 4)
+            output.append(
+                {
+                    "issue_id": issue_id,
+                    "spent_on": spent_on,
+                    "web_hours": round(web_hours, 4),
+                    "redmine_hours": round(redmine_hours, 4),
+                    "delta": delta,
+                    "is_same": abs(delta) < 1e-9,
+                    "count_redmine_entries": len(redmine_entries),
+                }
+            )
+        except Exception as e:
+            app.logger.error("check diff failed (%s, %s): %s", issue_id, spent_on, e)
+            output.append(
+                {
+                    "issue_id": issue_id,
+                    "spent_on": spent_on,
+                    "web_hours": round(web_hours, 4),
+                    "redmine_hours": None,
+                    "delta": None,
+                    "is_same": False,
+                    "error": str(e),
+                }
+            )
+
+    return jsonify({"items": output})
+
+
 @app.route("/api/sync/stream", methods=["POST"])
 def sync_redmine_stream():
     data = request.get_json(silent=True) or {}

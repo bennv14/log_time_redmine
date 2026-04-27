@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import logging
-from typing import Union
+from typing import List, Union
 
 import requests
 
-from redmine_time_client.base import AbstractRedmineTimeClient, TimeEntryResult
+from redmine_time_client.base import (
+    AbstractRedmineTimeClient,
+    RedmineTimeEntry,
+    TimeEntryResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,3 +79,52 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
         except Exception as e:
             logger.warning("post_time_entry failed: %s", e)
             return TimeEntryResult(ok=False, error_message=str(e))
+
+    def list_time_entries(
+        self,
+        issue_id: Union[int, str],
+        spent_on: str,
+    ) -> List[RedmineTimeEntry]:
+        headers = {"X-Redmine-API-Key": self._api_key}
+        entries: List[RedmineTimeEntry] = []
+        offset = 0
+        limit = 100
+
+        while True:
+            response = requests.get(
+                self._url,
+                params={
+                    "issue_id": issue_id,
+                    "spent_on": spent_on,
+                    "offset": offset,
+                    "limit": limit,
+                },
+                headers=headers,
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+            body = response.json() or {}
+            items = body.get("time_entries", [])
+            total_count = int(body.get("total_count", len(items)))
+
+            for item in items:
+                item_spent_on = str(item.get("spent_on") or "")
+                raw_issue = item.get("issue") or {}
+                item_issue_id = raw_issue.get("id", item.get("issue_id"))
+                if str(item_issue_id) != str(issue_id) or item_spent_on != spent_on:
+                    continue
+                entries.append(
+                    RedmineTimeEntry(
+                        id=int(item.get("id")),
+                        issue_id=item_issue_id,
+                        spent_on=item_spent_on,
+                        hours=float(item.get("hours") or 0),
+                        created_on=str(item.get("created_on") or ""),
+                    )
+                )
+
+            offset += len(items)
+            if offset >= total_count or not items:
+                break
+
+        return entries
