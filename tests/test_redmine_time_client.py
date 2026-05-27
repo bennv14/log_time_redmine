@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from app import app as flask_app
@@ -8,7 +9,14 @@ from redmine_time_client.factory import (
     create_redmine_time_client,
     parse_redmine_backend_from_env,
 )
-from redmine_time_client.http import DEFAULT_REDMINE_BASE_URL, HttpRedmineTimeClient
+from redmine_time_client.http import (
+    DEFAULT_JPREP_BASE_URL,
+    DEFAULT_JPREP_TIME_ENTRIES_PATH,
+    DEFAULT_PLANIO_BASE_URL,
+    DEFAULT_PLANIO_TIME_ENTRIES_PATH,
+    DEFAULT_REDMINE_BASE_URL,
+    HttpRedmineTimeClient,
+)
 from redmine_time_client.mock import MockRedmineTimeClient
 
 
@@ -44,6 +52,30 @@ class TestHttpRedmineTimeClient(unittest.TestCase):
             },
         )
         self.assertEqual(call_kw["headers"]["X-Redmine-API-Key"], "secret")
+        self.assertEqual(
+            mock_post.call_args[0][0],
+            f"{DEFAULT_REDMINE_BASE_URL}{DEFAULT_JPREP_TIME_ENTRIES_PATH}",
+        )
+
+    @patch("redmine_time_client.http.requests.post")
+    def test_post_time_entry_uses_planio_config(self, mock_post: MagicMock) -> None:
+        mock_response = MagicMock()
+        mock_response.status_code = 201
+        mock_response.text = '{"time_entry":{"id":2}}'
+        mock_post.return_value = mock_response
+        client = HttpRedmineTimeClient(
+            api_key="secret",
+            base_url=DEFAULT_PLANIO_BASE_URL,
+            time_entries_path=DEFAULT_PLANIO_TIME_ENTRIES_PATH,
+        )
+
+        r = client.post_time_entry(42, "2025-04-01", 2.5, 9)
+
+        self.assertTrue(r.ok)
+        self.assertEqual(
+            mock_post.call_args[0][0],
+            f"{DEFAULT_PLANIO_BASE_URL}{DEFAULT_PLANIO_TIME_ENTRIES_PATH}",
+        )
 
     @patch("redmine_time_client.http.requests.post")
     def test_post_time_entry_error_422(self, mock_post: MagicMock) -> None:
@@ -199,35 +231,75 @@ class TestRedmineClientFactory(unittest.TestCase):
                     "mock",
                 )
 
-    def test_parse_redmine_backend_from_env_http_when_unset_or_falsey(self) -> None:
-        self.assertEqual(parse_redmine_backend_from_env({}), "http")
+    def test_parse_redmine_backend_from_env_jprep_when_unset_or_falsey(self) -> None:
+        self.assertEqual(parse_redmine_backend_from_env({}), "jprep")
         self.assertEqual(
             parse_redmine_backend_from_env({"REDMINE_MOCK": "0"}),
-            "http",
+            "jprep",
         )
+
+    def test_parse_redmine_backend_from_env_explicit_clients(self) -> None:
+        self.assertEqual(
+            parse_redmine_backend_from_env({"REDMINE_CLIENT": "planio"}),
+            "planio",
+        )
+        self.assertEqual(
+            parse_redmine_backend_from_env({"REDMINE_CLIENT": "jprep"}),
+            "jprep",
+        )
+        self.assertEqual(
+            parse_redmine_backend_from_env({"REDMINE_CLIENT": "mock"}),
+            "mock",
+        )
+
+    def test_parse_redmine_backend_from_env_mock_overrides_client(self) -> None:
+        self.assertEqual(
+            parse_redmine_backend_from_env(
+                {"REDMINE_CLIENT": "planio", "REDMINE_MOCK": "true"}
+            ),
+            "mock",
+        )
+
+    def test_parse_redmine_backend_from_env_rejects_unknown_client(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_redmine_backend_from_env({"REDMINE_CLIENT": "unknown"})
 
     def test_backend_requires_api_key(self) -> None:
         self.assertFalse(backend_requires_api_key("mock"))
-        self.assertTrue(backend_requires_api_key("http"))
+        self.assertTrue(backend_requires_api_key("jprep"))
+        self.assertTrue(backend_requires_api_key("planio"))
 
     def test_create_redmine_time_client_mock(self) -> None:
         c = create_redmine_time_client("mock", api_key=None)
         self.assertIsInstance(c, MockRedmineTimeClient)
 
-    def test_create_redmine_time_client_http(self) -> None:
+    def test_create_redmine_time_client_jprep(self) -> None:
+        c = create_redmine_time_client("jprep", api_key="k")
+        self.assertIsInstance(c, HttpRedmineTimeClient)
+        self.assertEqual(c._base, DEFAULT_JPREP_BASE_URL.rstrip("/"))
+        self.assertEqual(c._path, DEFAULT_JPREP_TIME_ENTRIES_PATH)
+
+    def test_create_redmine_time_client_planio(self) -> None:
+        c = create_redmine_time_client("planio", api_key="k")
+        self.assertIsInstance(c, HttpRedmineTimeClient)
+        self.assertEqual(c._base, DEFAULT_PLANIO_BASE_URL.rstrip("/"))
+        self.assertEqual(c._path, DEFAULT_PLANIO_TIME_ENTRIES_PATH)
+
+    def test_create_redmine_time_client_http_alias_uses_jprep(self) -> None:
         c = create_redmine_time_client("http", api_key="k")
         self.assertIsInstance(c, HttpRedmineTimeClient)
-        self.assertEqual(c._base, DEFAULT_REDMINE_BASE_URL.rstrip("/"))
+        self.assertEqual(c._base, DEFAULT_JPREP_BASE_URL.rstrip("/"))
+        self.assertEqual(c._path, DEFAULT_JPREP_TIME_ENTRIES_PATH)
 
     def test_create_redmine_time_client_http_requires_key(self) -> None:
         with self.assertRaises(ValueError):
-            create_redmine_time_client("http", api_key=None)
+            create_redmine_time_client("planio", api_key=None)
 
 
 class TestCheckDiffApi(unittest.TestCase):
     def setUp(self) -> None:
         flask_app.config["TESTING"] = True
-        flask_app.config["REDMINE_BACKEND"] = "http"
+        flask_app.config["REDMINE_CLIENT"] = "jprep"
         self.client = flask_app.test_client()
 
     @patch("app.create_redmine_time_client")
@@ -256,6 +328,34 @@ class TestCheckDiffApi(unittest.TestCase):
         self.assertTrue(data["items"][0]["is_same"])
         self.assertFalse(data["items"][1]["is_same"])
         self.assertEqual(data["items"][1]["delta"], 2.0)
+
+
+class TestUploadCsvApi(unittest.TestCase):
+    def setUp(self) -> None:
+        flask_app.config["TESTING"] = True
+        self.client = flask_app.test_client()
+
+    def test_upload_hb2_timesheet_returns_json(self) -> None:
+        csv_path = (
+            Path(__file__).resolve().parents[1]
+            / "HB2_1799_JPREP Dojo_Timesheet_202604.csv"
+        )
+
+        with csv_path.open("rb") as f:
+            resp = self.client.post(
+                "/api/upload",
+                data={"file": (f, csv_path.name)},
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content_type, "application/json")
+        data = resp.get_json()
+        self.assertEqual(data["memberName"], "Nguyen Van Ben")
+        self.assertEqual(data["role"], "Dev App")
+        self.assertEqual(data["effortSum"], 76.0)
+        self.assertIn("2026-04-01", data["dates"])
+        self.assertEqual(data["tasks"][0]["taskId"], 1)
 
 
 if __name__ == "__main__":

@@ -27,8 +27,8 @@ DEFAULT_ACTIVITY_ID = 9
 
 
 def _apply_redmine_backend_config(flask_app: Flask) -> None:
-    """Resolve REDMINE_MOCK once per process; set REDMINE_BACKEND on app config."""
-    flask_app.config["REDMINE_BACKEND"] = parse_redmine_backend_from_env()
+    """Resolve Redmine client once per process; set REDMINE_CLIENT on app config."""
+    flask_app.config["REDMINE_CLIENT"] = parse_redmine_backend_from_env()
 
 
 _apply_redmine_backend_config(app)
@@ -238,7 +238,7 @@ def check_redmine_diff():
     api_key = data.get("apiKey")
     entries: List[Dict[str, Any]] = data.get("entries", [])
 
-    backend = app.config["REDMINE_BACKEND"]
+    backend = app.config["REDMINE_CLIENT"]
     if backend_requires_api_key(backend) and not api_key:
         return jsonify({"error": "Vui lòng nhập khóa API"}), 400
     if not entries:
@@ -292,7 +292,7 @@ def sync_redmine_stream():
     api_key = data.get("apiKey")
     entries: List[Dict[str, Any]] = data.get("entries", [])
 
-    backend = app.config["REDMINE_BACKEND"]
+    backend = app.config["REDMINE_CLIENT"]
     if backend_requires_api_key(backend) and not api_key:
         return jsonify({"error": "Vui lòng nhập khóa API"}), 400
     if not entries:
@@ -355,7 +355,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Use MockRedmineTimeClient (no real HTTP, API key optional).",
     )
+    parser.add_argument(
+        "--client",
+        choices=("jprep", "planio", "mock"),
+        default=None,
+        help="Redmine client to use. Defaults to REDMINE_CLIENT or jprep.",
+    )
     args = parser.parse_args()
+    if args.client:
+        app.config["REDMINE_CLIENT"] = args.client
     if args.mock:
-        app.config["REDMINE_BACKEND"] = "mock"
+        app.config["REDMINE_CLIENT"] = "mock"
     app.run(debug=True, host="0.0.0.0", port=5001)

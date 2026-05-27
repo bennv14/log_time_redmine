@@ -3,3 +3,4 @@
 logs/*
 !logs/.gitkeep
 redmine_time_client.egg-info/
+*__pycache__/

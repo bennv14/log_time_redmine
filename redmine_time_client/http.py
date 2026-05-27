@@ -13,8 +13,12 @@ from redmine_time_client.base import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_REDMINE_BASE_URL = "https://redmine.jprep.jp"
-DEFAULT_TIME_ENTRIES_PATH = "/redmine/time_entries.json"
+DEFAULT_JPREP_BASE_URL = "https://redmine.jprep.jp"
+DEFAULT_PLANIO_BASE_URL = "https://bennv.planio.com"
+DEFAULT_REDMINE_BASE_URL = DEFAULT_JPREP_BASE_URL
+DEFAULT_JPREP_TIME_ENTRIES_PATH = "/redmine/time_entries.json"
+DEFAULT_PLANIO_TIME_ENTRIES_PATH = "/time_entries.json"
+DEFAULT_TIME_ENTRIES_PATH = DEFAULT_JPREP_TIME_ENTRIES_PATH
 
 
 class HttpRedmineTimeClient(AbstractRedmineTimeClient):
@@ -27,10 +31,11 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
     def __init__(
         self,
         api_key: str,
+        base_url: str = DEFAULT_REDMINE_BASE_URL,
         time_entries_path: str = DEFAULT_TIME_ENTRIES_PATH,
         timeout: int = 15,
     ) -> None:
-        self._base = DEFAULT_REDMINE_BASE_URL.rstrip("/")
+        self._base = base_url.rstrip("/")
         self._api_key = api_key
         self._path = time_entries_path if time_entries_path.startswith("/") else f"/{time_entries_path}"
         self._timeout = timeout

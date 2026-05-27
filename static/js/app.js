@@ -549,6 +549,18 @@ function isCsvFile(file) {
     return file.type === 'text/csv' || file.type === 'application/vnd.ms-excel';
 }
 
+async function readJsonResponse(response) {
+    const text = await response.text();
+    if (!text) {
+        throw new Error(`Server trả response rỗng (HTTP ${response.status})`);
+    }
+    try {
+        return JSON.parse(text);
+    } catch (error) {
+        throw new Error(`Server không trả JSON hợp lệ (HTTP ${response.status})`);
+    }
+}
+
 async function uploadCsvFile(file) {
     if (!file) return;
     if (!isCsvFile(file)) {
@@ -569,7 +581,7 @@ async function uploadCsvFile(file) {
             body: formData
         });
         
-        const data = await response.json();
+        const data = await readJsonResponse(response);
         if (!response.ok) throw new Error(data.error || 'Tải tệp thất bại');
         
         appState = data;
@@ -1190,7 +1202,7 @@ async function runCheckDiff(entries, apiKey) {
         },
         body: JSON.stringify({ apiKey, entries: toApiEntries(entries) })
     });
-    const data = await response.json();
+    const data = await readJsonResponse(response);
     if (!response.ok) {
         throw new Error(data.error || `HTTP ${response.status}`);
     }
