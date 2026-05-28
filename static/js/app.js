@@ -24,7 +24,7 @@ let _pendingEditIndex = null;
 let _lastDeletedTask = null;
 let _undoDeleteTimer = null;
 
-const DEFAULT_ACTIVITY_ID = 9;
+const DEFAULT_ACTIVITY_ID = parseInt(document.body.dataset.defaultActivityId || "9", 10) || 9;
 
 /** @type {Array<{entry_id: string, issue_id: string, spent_on: string, hours: number, activity_id: number, taskName: string, status: string, error: string|null, httpStatus: number|null}>} */
 let syncResultRows = [];
@@ -34,6 +34,11 @@ let _syncInProgress = false;
 let _dragCounter = 0;
 /** @type {Array<{issue_id: string, spent_on: string, web_hours: number, redmine_hours: number|null, delta: number|null, is_same: boolean, error?: string, resolution: 'same'|'update_web'|'accept_redmine'|'unresolved'}>} */
 let checkDiffRows = [];
+let _checkDiffInProgress = false;
+let _checkDiffResolveInProgress = false;
+let _expandedCheckDiffErrors = new Set();
+let _collapsedCheckDiffEntries = new Set();
+let _mutatingCheckDiffEntryActions = new Map();
 
 function makeDiffKey(issueId, spentOn) {
     return `${String(issueId || '').trim()}__${String(spentOn || '').trim()}`;
@@ -49,6 +54,33 @@ function getTaskSnapshotsForIssueDate(issueId, spentOn) {
         });
     });
     return snapshots;
+}
+
+function buildPendingCheckDiffRows(entries) {
+    const grouped = new Map();
+    entries.forEach((entry) => {
+        const issueId = String(entry.issue_id || '').trim();
+        const spentOn = String(entry.spent_on || '').trim();
+        if (!issueId || !spentOn) return;
+        const key = makeDiffKey(issueId, spentOn);
+        const current = grouped.get(key) || {
+            issue_id: issueId,
+            spent_on: spentOn,
+            web_hours: 0,
+            redmine_hours: null,
+            delta: null,
+            is_same: false,
+            redmine_entries: [],
+            status: 'pending',
+            original_web_hours: 0,
+            web_task_snapshots: getTaskSnapshotsForIssueDate(issueId, spentOn),
+            resolution: 'unresolved'
+        };
+        current.web_hours += parseFloat(entry.hours || 0) || 0;
+        current.original_web_hours = current.web_hours;
+        grouped.set(key, current);
+    });
+    return Array.from(grouped.values());
 }
 
 function getSyncStats(rows = syncResultRows) {
@@ -325,6 +357,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnClearApiKey = document.getElementById('btn-clear-api-key');
     const btnOpenRequestHistory = document.getElementById('btn-open-request-history');
     const btnCheckDiff = document.getElementById('btn-check-diff');
+    const btnResolveCheckDiff = document.getElementById('btn-check-diff-resolve');
 
     btnUpload.addEventListener('click', () => csvFileInput.click());
     document.getElementById('csv-file-name').addEventListener('click', () => csvFileInput.click());
@@ -375,6 +408,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (btnCheckDiff) {
         btnCheckDiff.addEventListener('click', handleCheckDiff);
+    }
+    if (btnResolveCheckDiff) {
+        btnResolveCheckDiff.addEventListener('click', handleResolveCheckDiff);
     }
     const requestHistoryOverlay = document.getElementById('request-history-overlay');
     if (requestHistoryOverlay) {
@@ -693,7 +729,7 @@ function renderApp() {
 function renderTable() {
     const thead = document.getElementById('table-header');
     const tbody = document.getElementById('table-body');
-    
+
     // Clear existing
     thead.innerHTML = '';
     tbody.innerHTML = '';
@@ -703,23 +739,26 @@ function renderTable() {
                       <th class="sticky-col second-col">Tên</th>
                       <th class="sticky-col third-col text-center">Tổng giờ</th>`;
 
-    const todayIso = new Date().toISOString().slice(0, 10);
-    appState.dates.forEach(date => {
-        const d = new Date(date + 'T00:00:00');
-        const dayOfWeek = d.getDay();
-        const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-        const isToday = date === todayIso;
-        const dayNames = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
-        const label = `${dayNames[dayOfWeek]}<br><span style="font-weight:400;font-size:0.7rem">${date.slice(5)}</span>`;
-        headerHtml += `<th class="text-center min-w-100${isWeekend ? ' weekend-col' : ''}${isToday ? ' today-col' : ''}">${label}</th>`;
-    });
+    // Only render date columns if there are tasks (to avoid wide table when empty)
+    if (appState.tasks.length > 0) {
+        const todayIso = new Date().toISOString().slice(0, 10);
+        appState.dates.forEach(date => {
+            const d = new Date(date + 'T00:00:00');
+            const dayOfWeek = d.getDay();
+            const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+            const isToday = date === todayIso;
+            const dayNames = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+            const label = `${dayNames[dayOfWeek]}<br><span style="font-weight:400;font-size:0.7rem">${date.slice(5)}</span>`;
+            headerHtml += `<th class="text-center min-w-100${isWeekend ? ' weekend-col' : ''}${isToday ? ' today-col' : ''}">${label}</th>`;
+        });
+    }
     headerHtml += `<th class="action-col text-center">Thao tác</th>`;
     thead.innerHTML = headerHtml;
 
     // Render Rows
     if (appState.tasks.length === 0) {
         const tr = document.createElement('tr');
-        const colSpan = 4 + appState.dates.length;
+        const colSpan = 4 + (appState.tasks.length > 0 ? appState.dates.length : 0);
         tr.innerHTML = `<td colspan="${colSpan}" class="empty-state-td">
             <div class="empty-state">
                 <i class="bi bi-inbox empty-state-icon"></i>
@@ -899,6 +938,17 @@ function toApiEntries(rows) {
     }));
 }
 
+function getCheckDiffEntriesForResolve(collected) {
+    if (!Array.isArray(collected) || collected.length === 0) return [];
+    const diffMap = new Map();
+    checkDiffRows.forEach((row) => {
+        if (row.status === 'pending' || row.error || row.resolution === 'same') return;
+        if (row.delta == null || Number(row.delta || 0) <= 1e-9) return;
+        diffMap.set(makeDiffKey(row.issue_id, row.spent_on), true);
+    });
+    return collected.filter((entry) => diffMap.has(makeDiffKey(entry.issue_id, entry.spent_on)));
+}
+
 function updateSyncActionButtons() {
     const btnSync = document.getElementById('btn-sync');
     const btnCheckDiff = document.getElementById('btn-check-diff');
@@ -918,12 +968,23 @@ function updateSyncActionButtons() {
         btnRequestHistoryRetry.disabled = !hasFailed || _syncInProgress;
     }
     if (btnCheckDiff) {
-        btnCheckDiff.disabled = _syncInProgress || !hasTasks || collectSyncEntries().length === 0;
+        btnCheckDiff.disabled = _syncInProgress || _checkDiffInProgress || _checkDiffResolveInProgress || !hasTasks || collectSyncEntries().length === 0;
+    }
+    const btnResolveCheckDiff = document.getElementById('btn-check-diff-resolve');
+    if (btnResolveCheckDiff) {
+        const hasDiffToSync = checkDiffRows.some((row) => {
+            if (row.status === 'pending' || row.error || row.resolution === 'same') return false;
+            return row.delta != null && Number(row.delta || 0) > 1e-9;
+        });
+        btnResolveCheckDiff.disabled = _syncInProgress || _checkDiffInProgress || _checkDiffResolveInProgress || !hasDiffToSync;
+        btnResolveCheckDiff.innerHTML = _checkDiffResolveInProgress
+            ? '<span class="spinner-border spinner-border-sm me-1" style="width:0.65rem;height:0.65rem;"></span>Đang đồng bộ...'
+            : '<i class="bi bi-cloud-arrow-up me-1"></i>Đồng bộ Redmine theo Web';
     }
     if (!hasTasks) {
         btnSync.disabled = true;
     } else {
-        btnSync.disabled = _syncInProgress || getSyncEntriesForSubmit(collectSyncEntries()).length === 0;
+        btnSync.disabled = _syncInProgress || _checkDiffResolveInProgress || getSyncEntriesForSubmit(collectSyncEntries()).length === 0;
     }
     updateWorkflowSteps();
 }
@@ -1104,57 +1165,172 @@ function setCheckDiffOverlayVisible(isVisible) {
     overlay.setAttribute('aria-hidden', isVisible ? 'false' : 'true');
 }
 
+function renderCheckDiffStatus(row, rowKey) {
+    if (row.status === 'pending') {
+        return '<span class="badge text-bg-secondary"><span class="spinner-border spinner-border-sm me-1" style="width:0.65rem;height:0.65rem;"></span>Đang check</span>';
+    }
+    if (row.error) {
+        return `<button type="button" class="btn btn-sm btn-outline-danger check-diff-error-toggle" data-check-error-key="${escapeAttr(rowKey)}">Xem lỗi</button>`;
+    }
+    if (row.sync_error) {
+        return `<span class="badge text-bg-danger" title="${escapeAttr(row.sync_error)}">Không đồng bộ được</span>`;
+    }
+    if (row.resolution === 'same') {
+        return '<span class="badge text-bg-success">Giống nhau</span>';
+    }
+    if (row.resolution === 'update_web') {
+        return '<span class="badge text-bg-primary">Update theo Web</span>';
+    }
+    if (row.resolution === 'accept_redmine') {
+        return '<span class="badge text-bg-info">Chấp nhận Redmine</span>';
+    }
+    return '<span class="badge text-bg-warning">Khác nhau</span>';
+}
+
+function renderCheckDiffDelta(row) {
+    const deltaVal = row.delta;
+    if (deltaVal == null) return '—';
+    const prefix = deltaVal > 0 ? '▲ +' : deltaVal < 0 ? '▼ ' : '';
+    const cls = deltaVal > 0 ? 'check-diff-delta-positive' : deltaVal < 0 ? 'check-diff-delta-negative' : 'check-diff-delta-zero';
+    return `<span class="${cls} fw-bold">${prefix}${Number(deltaVal).toFixed(2)}</span>`;
+}
+
+function renderRedmineEntriesPanel(row, rowKey) {
+    if (row.status !== 'done' || row.error) return '';
+    if (_collapsedCheckDiffEntries.has(rowKey)) return '';
+    const entries = Array.isArray(row.redmine_entries) ? row.redmine_entries : [];
+    const totalHours = row.redmine_hours == null ? '0.00' : Number(row.redmine_hours).toFixed(2);
+    const rowsHtml = entries.length > 0
+        ? entries.map((entry, idx) => {
+            const entryId = entry.id == null ? `Entry ${idx + 1}` : `#${escapeHtml(String(entry.id))}`;
+            const hours = Number(entry.hours || 0).toFixed(2);
+            const comments = entry.comments ? escapeHtml(String(entry.comments)) : '—';
+            const createdOn = entry.created_on ? escapeHtml(String(entry.created_on)) : '—';
+            const canMutate = entry.id != null;
+            const entryKey = String(entry.id);
+            const pendingAction = _mutatingCheckDiffEntryActions.get(entryKey);
+            const isMutating = Boolean(pendingAction);
+            const disabledAttr = isMutating ? ' disabled aria-busy="true"' : '';
+            const editIcon = pendingAction === 'edit'
+                ? '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>'
+                : '<i class="bi bi-pencil"></i>';
+            const deleteIcon = pendingAction === 'delete'
+                ? '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>'
+                : '<i class="bi bi-trash3"></i>';
+            const actionHtml = canMutate
+                ? `
+                    <span class="check-diff-entry-actions">
+                        <button type="button" class="btn btn-sm btn-outline-primary check-diff-entry-action" title="${pendingAction === 'edit' ? 'Đang sửa...' : 'Sửa giờ'}" data-entry-action="edit" data-entry-id="${escapeAttr(entryKey)}" data-issue="${escapeAttr(String(row.issue_id))}" data-date="${escapeAttr(String(row.spent_on))}" data-web-hours="${escapeAttr(String(row.web_hours || 0))}" data-current-hours="${escapeAttr(String(entry.hours || 0))}"${disabledAttr}>${editIcon}</button>
+                        <button type="button" class="btn btn-sm btn-outline-danger check-diff-entry-action" title="${pendingAction === 'delete' ? 'Đang xóa...' : 'Xóa entry'}" data-entry-action="delete" data-entry-id="${escapeAttr(entryKey)}" data-issue="${escapeAttr(String(row.issue_id))}" data-date="${escapeAttr(String(row.spent_on))}" data-web-hours="${escapeAttr(String(row.web_hours || 0))}"${disabledAttr}>${deleteIcon}</button>
+                    </span>
+                `
+                : '<span class="text-muted">—</span>';
+            return `
+                <div class="check-diff-entry-row">
+                    <span class="check-diff-entry-id">${entryId}</span>
+                    <span class="check-diff-entry-hours">${hours}h</span>
+                    <span class="check-diff-entry-comment">${comments}</span>
+                    <span class="check-diff-entry-meta">${createdOn}</span>
+                    ${actionHtml}
+                </div>
+            `;
+        }).join('')
+        : '<div class="check-diff-entry-empty">Không có entry Redmine cho dòng này.</div>';
+
+    return `
+        <tr class="check-diff-entry-detail-row">
+            <td colspan="6">
+                <div class="check-diff-detail-panel">
+                    <div class="check-diff-detail-head">
+                        <span>Redmine time entries</span>
+                        <span>${entries.length} entry · ${totalHours}h</span>
+                    </div>
+                    <div class="check-diff-entry-table">
+                        <div class="check-diff-entry-row check-diff-entry-row-head">
+                            <span>Time Entry ID</span>
+                            <span>Hours</span>
+                            <span>Comment</span>
+                            <span>Created</span>
+                            <span></span>
+                        </div>
+                        ${rowsHtml}
+                    </div>
+                </div>
+            </td>
+        </tr>
+    `;
+}
+
+function upsertCheckDiffRowFromCheck(check) {
+    if (!check) return;
+    const key = makeDiffKey(check.issue_id, check.spent_on);
+    const idx = checkDiffRows.findIndex((row) => makeDiffKey(row.issue_id, row.spent_on) === key);
+    const nextRow = {
+        ...check,
+        status: check.error ? 'error' : 'done',
+        original_web_hours: check.web_hours,
+        web_task_snapshots: getTaskSnapshotsForIssueDate(check.issue_id, check.spent_on),
+        resolution: check.is_same ? 'same' : 'unresolved',
+        sync_error: null,
+        sync_action: null
+    };
+    if (idx >= 0) {
+        checkDiffRows[idx] = { ...checkDiffRows[idx], ...nextRow };
+    } else {
+        checkDiffRows.push(nextRow);
+    }
+}
+
+function renderCheckDiffErrorPanel(row, rowKey) {
+    if (!row.error || !_expandedCheckDiffErrors.has(rowKey)) return '';
+    return `
+        <tr class="check-diff-error-detail-row">
+            <td colspan="6">
+                <div class="check-diff-error-detail">
+                    <div class="check-diff-error-title">Chi tiết lỗi</div>
+                    <div>${escapeHtml(row.error)}</div>
+                </div>
+            </td>
+        </tr>
+    `;
+}
+
 function renderCheckDiffRows() {
     const tbody = document.getElementById('check-diff-body');
     const countEl = document.getElementById('check-diff-count');
     if (!tbody || !countEl) return;
-    countEl.textContent = String(checkDiffRows.length);
+    const doneCount = checkDiffRows.filter((row) => row.status !== 'pending').length;
+    countEl.textContent = _checkDiffInProgress ? `${doneCount}/${checkDiffRows.length}` : String(checkDiffRows.length);
     renderCheckDiffSummary();
     if (checkDiffRows.length === 0) {
-        tbody.innerHTML = '<tr id="check-diff-empty-row"><td colspan="7" class="text-center text-muted py-4">Chưa có dữ liệu check.</td></tr>';
+        tbody.innerHTML = '<tr id="check-diff-empty-row"><td colspan="6" class="text-center text-muted py-4">Chưa có dữ liệu check.</td></tr>';
         return;
     }
     tbody.innerHTML = '';
     checkDiffRows.forEach((row) => {
         const tr = document.createElement('tr');
-        let statusHtml = '';
+        const rowKey = makeDiffKey(row.issue_id, row.spent_on);
+        tr.className = 'check-diff-main-row';
+        tr.setAttribute('data-check-row-key', rowKey);
         if (row.error) {
-            statusHtml = `<span class="badge text-bg-danger" title="${escapeAttr(row.error)}">Lỗi check</span>`;
-        } else if (row.resolution === 'same') {
-            statusHtml = '<span class="badge text-bg-success">Giống nhau</span>';
-        } else if (row.resolution === 'update_web') {
-            statusHtml = '<span class="badge text-bg-primary">Update theo Web</span>';
-        } else if (row.resolution === 'accept_redmine') {
-            statusHtml = '<span class="badge text-bg-info">Chấp nhận Redmine</span>';
-        } else {
-            statusHtml = '<span class="badge text-bg-warning">Khác nhau</span>';
+            tr.className += ' check-diff-error-row';
+            tr.setAttribute('data-check-error-key', rowKey);
         }
-
-        const deltaVal = row.delta;
-        let deltaHtml = '—';
-        if (deltaVal != null) {
-            const prefix = deltaVal > 0 ? '▲ +' : deltaVal < 0 ? '▼ ' : '';
-            const cls = deltaVal > 0 ? 'check-diff-delta-positive' : deltaVal < 0 ? 'check-diff-delta-negative' : 'check-diff-delta-zero';
-            deltaHtml = `<span class="${cls} fw-bold">${prefix}${Number(deltaVal).toFixed(2)}</span>`;
-        }
-
-        const actionDisabled = !!row.error || row.redmine_hours === null;
-        const btnUpdateWeb = `<button type="button" class="btn btn-sm btn-outline-primary me-1" data-action="update_web" data-issue="${escapeAttr(row.issue_id)}" data-date="${escapeAttr(row.spent_on)}" ${actionDisabled ? 'disabled' : ''}>Update theo Web</button>`;
-        const btnAcceptRedmine = `<button type="button" class="btn btn-sm btn-outline-success" data-action="accept_redmine" data-issue="${escapeAttr(row.issue_id)}" data-date="${escapeAttr(row.spent_on)}" ${actionDisabled ? 'disabled' : ''}>Chấp nhận Redmine</button>`;
-        const actionHtml = row.resolution === 'same'
-            ? '<span class="text-muted">Không cần xử lý</span>'
-            : `${btnUpdateWeb}${btnAcceptRedmine}`;
+        const expandIcon = row.status === 'done' && !row.error
+            ? `<i class="bi ${_collapsedCheckDiffEntries.has(rowKey) ? 'bi-chevron-right' : 'bi-chevron-down'} check-diff-expand-icon"></i>`
+            : '';
 
         tr.innerHTML = `
-            <td class="text-nowrap">${escapeHtml(String(row.issue_id))}</td>
+            <td class="text-nowrap">${expandIcon}${escapeHtml(String(row.issue_id))}</td>
             <td class="text-nowrap">${escapeHtml(row.spent_on)}</td>
             <td class="text-end">${Number(row.web_hours || 0).toFixed(2)}</td>
             <td class="text-end">${row.redmine_hours == null ? '—' : Number(row.redmine_hours).toFixed(2)}</td>
-            <td class="text-end">${deltaHtml}</td>
-            <td>${statusHtml}</td>
-            <td>${actionHtml}</td>
+            <td class="text-end">${renderCheckDiffDelta(row)}</td>
+            <td>${renderCheckDiffStatus(row, rowKey)}</td>
         `;
         tbody.appendChild(tr);
+        tbody.insertAdjacentHTML('beforeend', renderRedmineEntriesPanel(row, rowKey));
+        tbody.insertAdjacentHTML('beforeend', renderCheckDiffErrorPanel(row, rowKey));
     });
 }
 
@@ -1209,6 +1385,218 @@ async function runCheckDiff(entries, apiKey) {
     return data.items || [];
 }
 
+async function runCheckDiffStream(entries, apiKey) {
+    const response = await fetch('/api/sync/check/stream', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream'
+        },
+        body: JSON.stringify({ apiKey, entries: toApiEntries(entries) })
+    });
+
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() || '';
+        for (const block of blocks) {
+            for (const line of block.split('\n')) {
+                if (!line.startsWith('data: ')) continue;
+                const payload = JSON.parse(line.slice(6));
+                if (payload.type === 'result') {
+                    const key = makeDiffKey(payload.issue_id, payload.spent_on);
+                    const idx = checkDiffRows.findIndex((row) => makeDiffKey(row.issue_id, row.spent_on) === key);
+                    const nextRow = {
+                        ...payload,
+                        status: payload.error ? 'error' : 'done',
+                        original_web_hours: payload.web_hours,
+                        web_task_snapshots: getTaskSnapshotsForIssueDate(payload.issue_id, payload.spent_on),
+                        resolution: payload.is_same ? 'same' : 'unresolved'
+                    };
+                    delete nextRow.type;
+                    if (idx >= 0) {
+                        checkDiffRows[idx] = { ...checkDiffRows[idx], ...nextRow };
+                    } else {
+                        _collapsedCheckDiffEntries.add(key);
+                        checkDiffRows.push(nextRow);
+                    }
+                    renderCheckDiffRows();
+                    renderInlineDiffIndicators();
+                    updateSyncActionButtons();
+                } else if (payload.type === 'done') {
+                    if ((payload.failed || 0) === 0) {
+                        showToast('Hoàn tất', `Đã check ${payload.total} dòng.`, 'success');
+                    } else {
+                        showToast('Hoàn tất (có lỗi)', `Thành công: ${payload.success}, lỗi: ${payload.failed}.`, 'warning');
+                    }
+                }
+            }
+        }
+    }
+}
+
+function applyResolveCheckPayload(payload) {
+    const row = payload.check;
+    if (!row) return;
+    const key = makeDiffKey(row.issue_id, row.spent_on);
+    const idx = checkDiffRows.findIndex((item) => makeDiffKey(item.issue_id, item.spent_on) === key);
+    const nextRow = {
+        ...row,
+        status: row.error ? 'error' : 'done',
+        original_web_hours: row.web_hours,
+        web_task_snapshots: getTaskSnapshotsForIssueDate(row.issue_id, row.spent_on),
+        resolution: row.is_same ? 'same' : 'unresolved',
+        sync_error: payload.ok ? null : (payload.error || null),
+        sync_action: payload.action || null
+    };
+    if (idx >= 0) {
+        checkDiffRows[idx] = { ...checkDiffRows[idx], ...nextRow };
+    } else {
+        checkDiffRows.push(nextRow);
+    }
+}
+
+async function runResolveCheckDiffStream(entries, apiKey) {
+    const response = await fetch('/api/sync/check/resolve/stream', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream'
+        },
+        body: JSON.stringify({ apiKey, entries: toApiEntries(entries) })
+    });
+
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() || '';
+        for (const block of blocks) {
+            for (const line of block.split('\n')) {
+                if (!line.startsWith('data: ')) continue;
+                const payload = JSON.parse(line.slice(6));
+                if (payload.type === 'result') {
+                    applyResolveCheckPayload(payload);
+                    renderCheckDiffRows();
+                    renderInlineDiffIndicators();
+                    updateSyncActionButtons();
+                    if (!payload.ok && payload.action === 'blocked_redmine_greater') {
+                        showToast('Không đồng bộ được', `${payload.issue_id} ngày ${payload.spent_on}: Redmine lớn hơn Web.`, 'warning');
+                    }
+                } else if (payload.type === 'done') {
+                    if ((payload.failed || 0) === 0) {
+                        showToast('Hoàn tất', `Đã đồng bộ ${payload.success} dòng, bỏ qua ${payload.skipped} dòng đã giống nhau.`, 'success');
+                    } else {
+                        showToast('Hoàn tất (có dòng chưa đồng bộ)', `Thành công: ${payload.success}, bỏ qua: ${payload.skipped}, không đồng bộ: ${payload.failed}.`, 'warning');
+                    }
+                }
+            }
+        }
+    }
+}
+
+async function mutateRedmineTimeEntry({ entryId, issueId, spentOn, webHours, hours, method, apiKey }) {
+    const body = {
+        apiKey,
+        issueId,
+        spentOn,
+        webHours,
+        activityId: DEFAULT_ACTIVITY_ID
+    };
+    if (method === 'PATCH') {
+        body.hours = hours;
+    }
+    const response = await fetch(`/api/sync/check/time-entry/${encodeURIComponent(entryId)}`, {
+        method,
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+    });
+    const data = await readJsonResponse(response);
+    if (!response.ok || !data.ok) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return data.check;
+}
+
+async function handleCheckDiffEntryAction(btn) {
+    const apiKey = document.getElementById('api-key').value;
+    if (!apiKey) {
+        showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
+        return;
+    }
+    const action = btn.getAttribute('data-entry-action');
+    const entryId = btn.getAttribute('data-entry-id');
+    const issueId = btn.getAttribute('data-issue');
+    const spentOn = btn.getAttribute('data-date');
+    const webHours = parseFloat(btn.getAttribute('data-web-hours') || '0') || 0;
+    if (!action || !entryId || !issueId || !spentOn) return;
+    if (_mutatingCheckDiffEntryActions.has(entryId)) return;
+
+    let method = 'DELETE';
+    let hours = null;
+    if (action === 'edit') {
+        const currentHours = parseFloat(btn.getAttribute('data-current-hours') || '0') || 0;
+        const raw = window.prompt('Nhập giờ mới cho time entry Redmine:', String(currentHours));
+        if (raw == null) return;
+        hours = parseFloat(raw);
+        if (!Number.isFinite(hours) || hours < 0) {
+            showToast('Lỗi', 'Giờ chỉnh sửa không hợp lệ.', 'warning');
+            return;
+        }
+        method = 'PATCH';
+    } else if (action === 'delete') {
+        if (!window.confirm(`Xóa time entry #${entryId}?`)) return;
+    } else {
+        return;
+    }
+
+    _mutatingCheckDiffEntryActions.set(entryId, action);
+    renderCheckDiffRows();
+    try {
+        const check = await mutateRedmineTimeEntry({
+            entryId,
+            issueId,
+            spentOn,
+            webHours,
+            hours,
+            method,
+            apiKey
+        });
+        upsertCheckDiffRowFromCheck(check);
+        renderInlineDiffIndicators();
+        updateSyncActionButtons();
+        showToast('Thành công', action === 'edit' ? 'Đã sửa time entry.' : 'Đã xóa time entry.', 'success');
+    } catch (error) {
+        showToast('Lỗi', error.message, 'danger');
+    } finally {
+        _mutatingCheckDiffEntryActions.delete(entryId);
+        renderCheckDiffRows();
+    }
+}
+
 async function handleCheckDiff() {
     const apiKey = document.getElementById('api-key').value;
     if (!apiKey) {
@@ -1220,20 +1608,48 @@ async function handleCheckDiff() {
         showToast('Thông báo', 'Không có dữ liệu giờ làm việc để kiểm tra.', 'info');
         return;
     }
+    _expandedCheckDiffErrors = new Set();
+    checkDiffRows = buildPendingCheckDiffRows(collected);
+    _collapsedCheckDiffEntries = new Set(
+        checkDiffRows.map((row) => makeDiffKey(row.issue_id, row.spent_on))
+    );
+    _checkDiffInProgress = true;
+    renderCheckDiffRows();
+    renderInlineDiffIndicators();
+    setCheckDiffOverlayVisible(true);
+    updateSyncActionButtons();
+
     try {
-        const items = await runCheckDiff(collected, apiKey);
-        checkDiffRows = items.map((item) => ({
-            ...item,
-            original_web_hours: item.web_hours,
-            web_task_snapshots: getTaskSnapshotsForIssueDate(item.issue_id, item.spent_on),
-            resolution: item.is_same ? 'same' : 'unresolved'
-        }));
-        renderCheckDiffRows();
-        renderInlineDiffIndicators();
-        setCheckDiffOverlayVisible(true);
-        updateSyncActionButtons();
+        await runCheckDiffStream(collected, apiKey);
     } catch (error) {
         showToast('Lỗi', error.message, 'danger');
+    } finally {
+        _checkDiffInProgress = false;
+        updateSyncActionButtons();
+    }
+}
+
+async function handleResolveCheckDiff() {
+    const apiKey = document.getElementById('api-key').value;
+    if (!apiKey) {
+        showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
+        return;
+    }
+    const collected = collectSyncEntries();
+    const filtered = getCheckDiffEntriesForResolve(collected);
+    if (filtered.length === 0) {
+        showToast('Thông báo', 'Không có dữ liệu giờ làm việc để đồng bộ.', 'info');
+        return;
+    }
+    _checkDiffResolveInProgress = true;
+    updateSyncActionButtons();
+    try {
+        await runResolveCheckDiffStream(filtered, apiKey);
+    } catch (error) {
+        showToast('Lỗi', error.message, 'danger');
+    } finally {
+        _checkDiffResolveInProgress = false;
+        updateSyncActionButtons();
     }
 }
 
@@ -1432,6 +1848,41 @@ function handleEditTask(taskIndex) {
 }
 
 document.addEventListener('click', (event) => {
+    const entryActionBtn = event.target.closest('button[data-entry-action][data-entry-id]');
+    if (entryActionBtn) {
+        handleCheckDiffEntryAction(entryActionBtn);
+        return;
+    }
+
+    const errorToggle = event.target.closest('[data-check-error-key]');
+    if (errorToggle && !event.target.closest('button[data-action][data-issue][data-date]')) {
+        const key = errorToggle.getAttribute('data-check-error-key');
+        if (key) {
+            if (_expandedCheckDiffErrors.has(key)) {
+                _expandedCheckDiffErrors.delete(key);
+            } else {
+                _expandedCheckDiffErrors.add(key);
+            }
+            renderCheckDiffRows();
+            return;
+        }
+    }
+
+    const mainRow = event.target.closest('tr[data-check-row-key]');
+    if (mainRow && !event.target.closest('button')) {
+        const key = mainRow.getAttribute('data-check-row-key');
+        const row = checkDiffRows.find((item) => makeDiffKey(item.issue_id, item.spent_on) === key);
+        if (key && row && row.status === 'done' && !row.error) {
+            if (_collapsedCheckDiffEntries.has(key)) {
+                _collapsedCheckDiffEntries.delete(key);
+            } else {
+                _collapsedCheckDiffEntries.add(key);
+            }
+            renderCheckDiffRows();
+            return;
+        }
+    }
+
     const btn = event.target.closest('button[data-action][data-issue][data-date]');
     if (!btn) return;
     const action = btn.getAttribute('data-action');
@@ -1455,7 +1906,8 @@ function renderCheckDiffSummary() {
     let same = 0, diff = 0, resolved = 0, error = 0;
     let totalWeb = 0, totalRedmine = 0;
     checkDiffRows.forEach((row) => {
-        if (row.error) { error++; return; }
+        if (row.status === 'pending') return;
+        if (row.error || row.sync_error) { error++; return; }
         totalWeb += parseFloat(row.web_hours || 0);
         totalRedmine += parseFloat(row.redmine_hours || 0);
         if (row.resolution === 'same') same++;
@@ -1496,7 +1948,7 @@ function getDiffForCell(issueId, spentOn) {
 
 /** Determine the CSS class suffix for a diff row's resolution state */
 function _diffDotClass(row) {
-    if (row.error) return 'diff-badge-error';
+    if (row.error || row.sync_error) return 'diff-badge-error';
     if (row.resolution === 'same') return 'diff-badge-same';
     if (row.resolution === 'update_web') return 'diff-badge-update-web';
     if (row.resolution === 'accept_redmine') return 'diff-badge-accept-redmine';
@@ -1505,7 +1957,7 @@ function _diffDotClass(row) {
 
 /** Determine the cell CSS class suffix for td tinting */
 function _diffCellClass(row) {
-    if (row.error) return 'diff-cell-error';
+    if (row.error || row.sync_error) return 'diff-cell-error';
     if (row.resolution === 'same') return 'diff-cell-same';
     if (row.resolution === 'update_web') return 'diff-cell-update-web';
     if (row.resolution === 'accept_redmine') return 'diff-cell-accept-redmine';
@@ -1514,7 +1966,7 @@ function _diffCellClass(row) {
 
 /** Short label for the badge */
 function _diffBadgeLabel(row) {
-    if (row.error) return '⚠ Lỗi';
+    if (row.error || row.sync_error) return '⚠ Lỗi';
     if (row.resolution === 'same') return '✓ OK';
     if (row.resolution === 'update_web') return '↑ Web';
     if (row.resolution === 'accept_redmine') return '↓ RM';
@@ -1524,6 +1976,7 @@ function _diffBadgeLabel(row) {
 /** Build tooltip text for a diff row */
 function _diffTipText(row) {
     if (row.error) return `Lỗi: ${row.error}`;
+    if (row.sync_error) return `Không đồng bộ được: ${row.sync_error}`;
     const webH = Number(row.web_hours || 0).toFixed(2);
     const rmH = row.redmine_hours != null ? Number(row.redmine_hours).toFixed(2) : '—';
     const d = row.delta != null ? (row.delta > 0 ? '+' : '') + Number(row.delta).toFixed(2) : '—';

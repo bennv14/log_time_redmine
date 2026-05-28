@@ -41,6 +41,10 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
         self._timeout = timeout
         self._url = f"{self._base}{self._path}"
 
+    def _entry_url(self, entry_id: Union[int, str]) -> str:
+        path_without_json = self._path[:-5] if self._path.endswith(".json") else self._path
+        return f"{self._base}{path_without_json}/{entry_id}.json"
+
     def post_time_entry(
         self,
         issue_id: Union[int, str],
@@ -125,6 +129,7 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
                         spent_on=item_spent_on,
                         hours=float(item.get("hours") or 0),
                         created_on=str(item.get("created_on") or ""),
+                        comments=str(item.get("comments") or ""),
                     )
                 )
 
@@ -133,3 +138,64 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
                 break
 
         return entries
+
+    def update_time_entry(
+        self,
+        entry_id: Union[int, str],
+        hours: float,
+    ) -> TimeEntryResult:
+        payload = {"time_entry": {"hours": float(hours)}}
+        headers = {
+            "Content-Type": "application/json",
+            "X-Redmine-API-Key": self._api_key,
+        }
+        try:
+            response = requests.put(
+                self._entry_url(entry_id),
+                json=payload,
+                headers=headers,
+                timeout=self._timeout,
+            )
+            text = response.text
+            if response.status_code in (200, 204):
+                return TimeEntryResult(
+                    ok=True,
+                    status_code=response.status_code,
+                    response_text=text[:2000] if text else None,
+                )
+            err = text[:2000] if text else f"HTTP {response.status_code}"
+            return TimeEntryResult(
+                ok=False,
+                status_code=response.status_code,
+                error_message=err,
+                response_text=text[:2000] if text else None,
+            )
+        except Exception as e:
+            logger.warning("update_time_entry failed: %s", e)
+            return TimeEntryResult(ok=False, error_message=str(e))
+
+    def delete_time_entry(self, entry_id: Union[int, str]) -> TimeEntryResult:
+        headers = {"X-Redmine-API-Key": self._api_key}
+        try:
+            response = requests.delete(
+                self._entry_url(entry_id),
+                headers=headers,
+                timeout=self._timeout,
+            )
+            text = response.text
+            if response.status_code in (200, 204):
+                return TimeEntryResult(
+                    ok=True,
+                    status_code=response.status_code,
+                    response_text=text[:2000] if text else None,
+                )
+            err = text[:2000] if text else f"HTTP {response.status_code}"
+            return TimeEntryResult(
+                ok=False,
+                status_code=response.status_code,
+                error_message=err,
+                response_text=text[:2000] if text else None,
+            )
+        except Exception as e:
+            logger.warning("delete_time_entry failed: %s", e)
+            return TimeEntryResult(ok=False, error_message=str(e))

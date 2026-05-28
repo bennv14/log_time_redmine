@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from app import app as flask_app
-from redmine_time_client.base import TimeEntryResult
+from redmine_time_client.base import RedmineTimeEntry, TimeEntryResult
 from redmine_time_client.factory import (
     backend_requires_api_key,
     create_redmine_time_client,
@@ -75,6 +75,39 @@ class TestHttpRedmineTimeClient(unittest.TestCase):
         self.assertEqual(
             mock_post.call_args[0][0],
             f"{DEFAULT_PLANIO_BASE_URL}{DEFAULT_PLANIO_TIME_ENTRIES_PATH}",
+        )
+
+    @patch("redmine_time_client.http.requests.put")
+    def test_update_time_entry_uses_individual_url(self, mock_put: MagicMock) -> None:
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_response.text = ""
+        mock_put.return_value = mock_response
+
+        r = self.client.update_time_entry(123, 2.0)
+
+        self.assertTrue(r.ok)
+        self.assertEqual(r.status_code, 204)
+        self.assertEqual(
+            mock_put.call_args[0][0],
+            f"{DEFAULT_REDMINE_BASE_URL}/redmine/time_entries/123.json",
+        )
+        self.assertEqual(mock_put.call_args[1]["json"], {"time_entry": {"hours": 2.0}})
+
+    @patch("redmine_time_client.http.requests.delete")
+    def test_delete_time_entry_uses_individual_url(self, mock_delete: MagicMock) -> None:
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_response.text = ""
+        mock_delete.return_value = mock_response
+
+        r = self.client.delete_time_entry(123)
+
+        self.assertTrue(r.ok)
+        self.assertEqual(r.status_code, 204)
+        self.assertEqual(
+            mock_delete.call_args[0][0],
+            f"{DEFAULT_REDMINE_BASE_URL}/redmine/time_entries/123.json",
         )
 
     @patch("redmine_time_client.http.requests.post")
@@ -222,6 +255,23 @@ class TestMockRedmineTimeClient(unittest.TestCase):
         self.assertEqual(mock_sleep.call_count, 2)
         self.assertEqual(mock_random.call_count, 2)
 
+    @patch("redmine_time_client.mock.time.sleep")
+    @patch("redmine_time_client.mock.random.random", return_value=0.9)
+    def test_update_and_delete_time_entry_mutates_saved_entries(
+        self, mock_random: MagicMock, mock_sleep: MagicMock
+    ) -> None:
+        c = MockRedmineTimeClient(default_error_rate=0.0)
+        c.post_time_entry(1, "2025-01-01", 1.0, 9)
+        entry = c.list_time_entries(1, "2025-01-01")[0]
+
+        update_res = c.update_time_entry(entry.id, 2.5)
+        self.assertTrue(update_res.ok)
+        self.assertAlmostEqual(c.list_time_entries(1, "2025-01-01")[0].hours, 2.5)
+
+        delete_res = c.delete_time_entry(entry.id)
+        self.assertTrue(delete_res.ok)
+        self.assertEqual(c.list_time_entries(1, "2025-01-01"), [])
+
 class TestRedmineClientFactory(unittest.TestCase):
     def test_parse_redmine_backend_from_env_mock_values(self) -> None:
         for val in ("1", "true", "yes", "TRUE", "  Yes "):
@@ -328,6 +378,103 @@ class TestCheckDiffApi(unittest.TestCase):
         self.assertTrue(data["items"][0]["is_same"])
         self.assertFalse(data["items"][1]["is_same"])
         self.assertEqual(data["items"][1]["delta"], 2.0)
+
+    @patch("app.create_redmine_time_client")
+    def test_resolve_check_diff_creates_missing_and_delta_and_blocks_greater(
+        self, mock_factory: MagicMock
+    ) -> None:
+        mock_client = MagicMock()
+        mock_client.list_time_entries.side_effect = [
+            [],
+            [RedmineTimeEntry(100, 1, "2025-04-01", 2.0, "now")],
+            [RedmineTimeEntry(200, 2, "2025-04-02", 1.0, "now")],
+            [
+                RedmineTimeEntry(200, 2, "2025-04-02", 1.0, "now"),
+                RedmineTimeEntry(201, 2, "2025-04-02", 2.0, "now"),
+            ],
+            [RedmineTimeEntry(300, 3, "2025-04-03", 5.0, "now")],
+        ]
+        mock_client.post_time_entry.side_effect = [
+            TimeEntryResult(ok=True, status_code=201, response_text="{}"),
+            TimeEntryResult(ok=True, status_code=201, response_text="{}"),
+        ]
+        mock_factory.return_value = mock_client
+
+        resp = self.client.post(
+            "/api/sync/check/resolve/stream",
+            json={
+                "apiKey": "k",
+                "entries": [
+                    {"issue_id": "1", "spent_on": "2025-04-01", "hours": 2.0},
+                    {"issue_id": "2", "spent_on": "2025-04-02", "hours": 3.0},
+                    {"issue_id": "3", "spent_on": "2025-04-03", "hours": 2.0},
+                ],
+            },
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        text = resp.get_data(as_text=True)
+        self.assertIn('"action": "created_missing"', text)
+        self.assertIn('"action": "created_delta"', text)
+        self.assertIn('"action": "blocked_redmine_greater"', text)
+        self.assertIn('"success": 2', text)
+        self.assertIn('"failed": 1', text)
+        self.assertEqual(mock_client.post_time_entry.call_count, 2)
+        self.assertEqual(mock_client.post_time_entry.call_args_list[0].args[:3], ("1", "2025-04-01", 2.0))
+        self.assertEqual(mock_client.post_time_entry.call_args_list[1].args[:3], ("2", "2025-04-02", 2.0))
+
+    @patch("app.create_redmine_time_client")
+    def test_mutate_redmine_time_entry_updates_and_returns_check(
+        self, mock_factory: MagicMock
+    ) -> None:
+        mock_client = MagicMock()
+        mock_client.update_time_entry.return_value = TimeEntryResult(ok=True, status_code=204)
+        mock_client.list_time_entries.return_value = [
+            RedmineTimeEntry(10, 1, "2025-04-01", 2.0, "now")
+        ]
+        mock_factory.return_value = mock_client
+
+        resp = self.client.patch(
+            "/api/sync/check/time-entry/10",
+            json={
+                "apiKey": "k",
+                "issueId": "1",
+                "spentOn": "2025-04-01",
+                "webHours": 2.0,
+                "hours": 2.0,
+            },
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["check"]["is_same"])
+        mock_client.update_time_entry.assert_called_once_with("10", 2.0)
+
+    @patch("app.create_redmine_time_client")
+    def test_mutate_redmine_time_entry_deletes_and_returns_check(
+        self, mock_factory: MagicMock
+    ) -> None:
+        mock_client = MagicMock()
+        mock_client.delete_time_entry.return_value = TimeEntryResult(ok=True, status_code=204)
+        mock_client.list_time_entries.return_value = []
+        mock_factory.return_value = mock_client
+
+        resp = self.client.delete(
+            "/api/sync/check/time-entry/10",
+            json={
+                "apiKey": "k",
+                "issueId": "1",
+                "spentOn": "2025-04-01",
+                "webHours": 2.0,
+            },
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["check"]["redmine_hours"], 0)
+        mock_client.delete_time_entry.assert_called_once_with("10")
 
 
 class TestUploadCsvApi(unittest.TestCase):

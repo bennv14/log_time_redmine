@@ -13,6 +13,7 @@ from flask_cors import CORS
 
 from redmine_time_client import (
     AbstractRedmineTimeClient,
+    RedmineTimeEntry,
     TimeEntryResult,
     backend_requires_api_key,
     create_redmine_time_client,
@@ -25,6 +26,12 @@ logging.basicConfig(level=logging.INFO)
 
 DEFAULT_ACTIVITY_ID = 9
 
+_ACTIVITY_IDS = {
+    "jprep": 9,
+    "planio": 20,
+    "mock": 9,
+}
+
 
 def _apply_redmine_backend_config(flask_app: Flask) -> None:
     """Resolve Redmine client once per process; set REDMINE_CLIENT on app config."""
@@ -32,6 +39,8 @@ def _apply_redmine_backend_config(flask_app: Flask) -> None:
 
 
 _apply_redmine_backend_config(app)
+
+DEFAULT_ACTIVITY_ID = _ACTIVITY_IDS.get(app.config["REDMINE_CLIENT"], 9)
 
 _LOGS_DIR = Path(__file__).resolve().parent / "logs"
 _LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -81,7 +90,7 @@ def format_date_with_current_year(date_str):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html', DEFAULT_ACTIVITY_ID=DEFAULT_ACTIVITY_ID)
 
 @app.route('/api/upload', methods=['POST'])
 def upload_csv():
@@ -232,6 +241,208 @@ def _build_check_items(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return list(grouped.values())
 
 
+def _serialize_redmine_time_entry(entry: RedmineTimeEntry) -> Dict[str, Any]:
+    raw_id = getattr(entry, "id", None)
+    raw_issue_id = getattr(entry, "issue_id", None)
+    return {
+        "id": raw_id if isinstance(raw_id, (int, str)) else None,
+        "issue_id": raw_issue_id if isinstance(raw_issue_id, (int, str)) else None,
+        "spent_on": str(getattr(entry, "spent_on", "") or ""),
+        "hours": float(getattr(entry, "hours", 0) or 0),
+        "created_on": str(getattr(entry, "created_on", "") or ""),
+        "comments": str(getattr(entry, "comments", "") or ""),
+    }
+
+
+def _check_one(
+    client: AbstractRedmineTimeClient, item: Dict[str, Any]
+) -> Dict[str, Any]:
+    issue_id = item["issue_id"]
+    spent_on = item["spent_on"]
+    web_hours = float(item["web_hours"])
+    try:
+        redmine_entries = client.list_time_entries(issue_id=issue_id, spent_on=spent_on)
+        redmine_hours = float(sum(float(e.hours or 0) for e in redmine_entries))
+        delta = round(web_hours - redmine_hours, 4)
+        return {
+            "issue_id": issue_id,
+            "spent_on": spent_on,
+            "web_hours": round(web_hours, 4),
+            "redmine_hours": round(redmine_hours, 4),
+            "delta": delta,
+            "is_same": abs(delta) < 1e-9,
+            "count_redmine_entries": len(redmine_entries),
+            "redmine_entries": [
+                _serialize_redmine_time_entry(e) for e in redmine_entries
+            ],
+        }
+    except Exception as e:
+        app.logger.error("check diff failed (%s, %s): %s", issue_id, spent_on, e)
+        return {
+            "issue_id": issue_id,
+            "spent_on": spent_on,
+            "web_hours": round(web_hours, 4),
+            "redmine_hours": None,
+            "delta": None,
+            "is_same": False,
+            "error": str(e),
+            "redmine_entries": [],
+        }
+
+
+def _resolve_check_diff_one(
+    client: AbstractRedmineTimeClient, item: Dict[str, Any]
+) -> Dict[str, Any]:
+    issue_id = item["issue_id"]
+    spent_on = item["spent_on"]
+    web_hours = round(float(item["web_hours"]), 4)
+    activity_id = int(item.get("activity_id", DEFAULT_ACTIVITY_ID))
+    try:
+        before = _check_one(client, item)
+        if before.get("error"):
+            return {
+                "type": "result",
+                "issue_id": issue_id,
+                "spent_on": spent_on,
+                "web_hours": web_hours,
+                "ok": False,
+                "action": "error",
+                "error": before["error"],
+                "check": before,
+            }
+
+        redmine_hours = float(before.get("redmine_hours") or 0)
+        delta = round(web_hours - redmine_hours, 4)
+        if abs(delta) < 1e-9:
+            return {
+                "type": "result",
+                "issue_id": issue_id,
+                "spent_on": spent_on,
+                "web_hours": web_hours,
+                "ok": True,
+                "action": "same",
+                "message": "Redmine đã giống Web.",
+                "check": before,
+            }
+
+        if delta < 0:
+            return {
+                "type": "result",
+                "issue_id": issue_id,
+                "spent_on": spent_on,
+                "web_hours": web_hours,
+                "ok": False,
+                "action": "blocked_redmine_greater",
+                "error": (
+                    "Giờ Redmine đang lớn hơn giờ Web; không đồng bộ tự động được."
+                ),
+                "check": before,
+            }
+
+        res = client.post_time_entry(issue_id, spent_on, delta, activity_id)
+        _log_time_entry_result(
+            {
+                "entry_id": f"resolve:{issue_id}:{spent_on}",
+                "issue_id": issue_id,
+                "spent_on": spent_on,
+                "hours": delta,
+                "activity_id": activity_id,
+            },
+            res,
+        )
+        if not res.ok:
+            return {
+                "type": "result",
+                "issue_id": issue_id,
+                "spent_on": spent_on,
+                "web_hours": web_hours,
+                "ok": False,
+                "action": "create_delta_failed",
+                "error": res.error_message or f"HTTP {res.status_code}",
+                "status_code": res.status_code,
+                "check": before,
+            }
+
+        after = _check_one(client, item)
+        return {
+            "type": "result",
+            "issue_id": issue_id,
+            "spent_on": spent_on,
+            "web_hours": web_hours,
+            "ok": not bool(after.get("error")),
+            "action": "created_missing" if redmine_hours == 0 else "created_delta",
+            "created_hours": delta,
+            "message": f"Đã tạo thêm {delta:.2f}h trên Redmine.",
+            "status_code": res.status_code,
+            "check": after,
+        }
+    except Exception as e:
+        app.logger.error("resolve check diff failed (%s, %s): %s", issue_id, spent_on, e)
+        return {
+            "type": "result",
+            "issue_id": issue_id,
+            "spent_on": spent_on,
+            "web_hours": web_hours,
+            "ok": False,
+            "action": "error",
+            "error": str(e),
+        }
+
+
+@app.route("/api/sync/check/time-entry/<entry_id>", methods=["PATCH", "DELETE"])
+def mutate_redmine_time_entry(entry_id: str):
+    data = request.get_json(silent=True) or {}
+    api_key = data.get("apiKey")
+    issue_id = str(data.get("issueId", "")).strip()
+    spent_on = str(data.get("spentOn", "")).strip()
+    web_hours = data.get("webHours")
+
+    backend = app.config["REDMINE_CLIENT"]
+    if backend_requires_api_key(backend) and not api_key:
+        return jsonify({"error": "Vui lòng nhập khóa API"}), 400
+    if not issue_id or not spent_on or web_hours is None:
+        return jsonify({"error": "Thiếu issueId, spentOn hoặc webHours"}), 400
+
+    client: AbstractRedmineTimeClient = create_redmine_time_client(
+        backend,
+        api_key=api_key,
+    )
+
+    if request.method == "DELETE":
+        res = client.delete_time_entry(entry_id)
+    else:
+        try:
+            hours = float(data.get("hours"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "Giờ chỉnh sửa không hợp lệ"}), 400
+        if hours < 0:
+            return jsonify({"error": "Giờ chỉnh sửa không được âm"}), 400
+        res = client.update_time_entry(entry_id, hours)
+
+    if not res.ok:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": res.error_message or f"HTTP {res.status_code}",
+                    "status_code": res.status_code,
+                }
+            ),
+            400,
+        )
+
+    check = _check_one(
+        client,
+        {
+            "issue_id": issue_id,
+            "spent_on": spent_on,
+            "web_hours": float(web_hours),
+            "activity_id": int(data.get("activityId", DEFAULT_ACTIVITY_ID)),
+        },
+    )
+    return jsonify({"ok": True, "status_code": res.status_code, "check": check})
+
+
 @app.route("/api/sync/check", methods=["POST"])
 def check_redmine_diff():
     data = request.get_json(silent=True) or {}
@@ -251,39 +462,112 @@ def check_redmine_diff():
     output: List[Dict[str, Any]] = []
 
     for item in _build_check_items(entries):
-        issue_id = item["issue_id"]
-        spent_on = item["spent_on"]
-        web_hours = float(item["web_hours"])
-        try:
-            redmine_entries = client.list_time_entries(issue_id=issue_id, spent_on=spent_on)
-            redmine_hours = float(sum(float(e.hours or 0) for e in redmine_entries))
-            delta = round(web_hours - redmine_hours, 4)
-            output.append(
-                {
-                    "issue_id": issue_id,
-                    "spent_on": spent_on,
-                    "web_hours": round(web_hours, 4),
-                    "redmine_hours": round(redmine_hours, 4),
-                    "delta": delta,
-                    "is_same": abs(delta) < 1e-9,
-                    "count_redmine_entries": len(redmine_entries),
-                }
-            )
-        except Exception as e:
-            app.logger.error("check diff failed (%s, %s): %s", issue_id, spent_on, e)
-            output.append(
-                {
-                    "issue_id": issue_id,
-                    "spent_on": spent_on,
-                    "web_hours": round(web_hours, 4),
-                    "redmine_hours": None,
-                    "delta": None,
-                    "is_same": False,
-                    "error": str(e),
-                }
-            )
+        output.append(_check_one(client, item))
 
     return jsonify({"items": output})
+
+
+@app.route("/api/sync/check/resolve/stream", methods=["POST"])
+def resolve_redmine_check_diff_stream():
+    data = request.get_json(silent=True) or {}
+    api_key = data.get("apiKey")
+    entries: List[Dict[str, Any]] = data.get("entries", [])
+
+    backend = app.config["REDMINE_CLIENT"]
+    if backend_requires_api_key(backend) and not api_key:
+        return jsonify({"error": "Vui lòng nhập khóa API"}), 400
+    if not entries:
+        return jsonify({"error": "Không có bản ghi cần đồng bộ"}), 400
+
+    items = _build_check_items(entries)
+
+    def generate():
+        client: AbstractRedmineTimeClient = create_redmine_time_client(
+            backend,
+            api_key=api_key,
+        )
+        success = 0
+        failed = 0
+        skipped = 0
+        for item in items:
+            result = _resolve_check_diff_one(client, item)
+            if result.get("ok"):
+                if result.get("action") == "same":
+                    skipped += 1
+                else:
+                    success += 1
+            else:
+                failed += 1
+            yield _format_sse(result)
+        yield _format_sse(
+            {
+                "type": "done",
+                "total": len(items),
+                "success": success,
+                "failed": failed,
+                "skipped": skipped,
+            }
+        )
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.route("/api/sync/check/stream", methods=["POST"])
+def check_redmine_diff_stream():
+    data = request.get_json(silent=True) or {}
+    api_key = data.get("apiKey")
+    entries: List[Dict[str, Any]] = data.get("entries", [])
+
+    backend = app.config["REDMINE_CLIENT"]
+    if backend_requires_api_key(backend) and not api_key:
+        return jsonify({"error": "Vui lòng nhập khóa API"}), 400
+    if not entries:
+        return jsonify({"error": "Không có bản ghi để kiểm tra"}), 400
+
+    items = _build_check_items(entries)
+
+    def generate():
+        client: AbstractRedmineTimeClient = create_redmine_time_client(
+            backend,
+            api_key=api_key,
+        )
+        n = len(items)
+        max_workers = min(_SSE_MAX_WORKERS, max(1, n))
+        success = 0
+        failed = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_map = {pool.submit(_check_one, client, item): item for item in items}
+            for fut in as_completed(future_map):
+                result = fut.result()
+                if result.get("error"):
+                    failed += 1
+                else:
+                    success += 1
+                yield _format_sse({"type": "result", **result})
+        yield _format_sse(
+            {
+                "type": "done",
+                "total": n,
+                "success": success,
+                "failed": failed,
+            }
+        )
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.route("/api/sync/stream", methods=["POST"])
@@ -362,8 +646,9 @@ if __name__ == "__main__":
         help="Redmine client to use. Defaults to REDMINE_CLIENT or jprep.",
     )
     args = parser.parse_args()
-    if args.client:
-        app.config["REDMINE_CLIENT"] = args.client
     if args.mock:
         app.config["REDMINE_CLIENT"] = "mock"
+    elif args.client:
+        app.config["REDMINE_CLIENT"] = args.client
+    DEFAULT_ACTIVITY_ID = _ACTIVITY_IDS.get(app.config["REDMINE_CLIENT"], 9)
     app.run(debug=True, host="0.0.0.0", port=5001)

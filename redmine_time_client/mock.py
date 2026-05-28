@@ -106,6 +106,42 @@ class MockRedmineTimeClient(AbstractRedmineTimeClient):
         key = (str(issue_id), spent_on)
         return list(self._entries.get(key, []))
 
+    def update_time_entry(
+        self,
+        entry_id: Union[int, str],
+        hours: float,
+    ) -> TimeEntryResult:
+        for entries in self._entries.values():
+            for entry in entries:
+                if str(entry.id) == str(entry_id):
+                    entry.hours = float(hours)
+                    return TimeEntryResult(
+                        ok=True,
+                        status_code=200,
+                        response_text=f'{{"time_entry":{{"id":{entry.id},"mock":true}}}}',
+                    )
+        return TimeEntryResult(
+            ok=False,
+            status_code=404,
+            error_message="Time entry not found (mock)",
+            response_text="Time entry not found (mock)",
+        )
+
+    def delete_time_entry(self, entry_id: Union[int, str]) -> TimeEntryResult:
+        for key, entries in self._entries.items():
+            for idx, entry in enumerate(entries):
+                if str(entry.id) == str(entry_id):
+                    del entries[idx]
+                    if not entries:
+                        del self._entries[key]
+                    return TimeEntryResult(ok=True, status_code=204)
+        return TimeEntryResult(
+            ok=False,
+            status_code=404,
+            error_message="Time entry not found (mock)",
+            response_text="Time entry not found (mock)",
+        )
+
     def _store_entry(self, issue_id: Union[int, str], spent_on: str, hours: float) -> None:
         key = (str(issue_id), spent_on)
         created_on = datetime.now(timezone.utc).isoformat()
@@ -119,4 +155,3 @@ class MockRedmineTimeClient(AbstractRedmineTimeClient):
             )
         )
         self._next_entry_id += 1
-

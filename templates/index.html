@@ -12,7 +12,7 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
     <link href="/static/css/style.css" rel="stylesheet">
 </head>
-<body>
+<body data-default-activity-id="{{ DEFAULT_ACTIVITY_ID }}">
     <!-- Navbar -->
     <nav class="app-navbar">
         <div class="container-fluid px-4">
@@ -436,18 +436,20 @@
                                 <th class="text-end">Giờ Redmine</th>
                                 <th class="text-end">Chênh lệch</th>
                                 <th>Trạng thái</th>
-                                <th>Hành động</th>
                             </tr>
                         </thead>
                         <tbody id="check-diff-body">
                             <tr id="check-diff-empty-row">
-                                <td colspan="7" class="text-center text-muted py-4">Chưa có dữ liệu check.</td>
+                                <td colspan="6" class="text-center text-muted py-4">Chưa có dữ liệu check.</td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
             </div>
             <div class="sync-overlay-actions">
+                <button type="button" class="btn btn-sm btn-success" id="btn-check-diff-resolve" disabled>
+                    <i class="bi bi-cloud-arrow-up me-1"></i>Đồng bộ Redmine theo Web
+                </button>
                 <button type="button" class="btn btn-sm btn-primary sync-overlay-close-btn" id="btn-check-diff-close">
                     Đóng
                 </button>

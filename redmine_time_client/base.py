@@ -22,6 +22,7 @@ class RedmineTimeEntry:
     spent_on: str
     hours: float
     created_on: str
+    comments: str = ""
 
 
 class AbstractRedmineTimeClient(ABC):
@@ -48,4 +49,18 @@ class AbstractRedmineTimeClient(ABC):
         spent_on: str,
     ) -> List[RedmineTimeEntry]:
         """List time entries for an issue and date (`spent_on`: YYYY-MM-DD)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_time_entry(
+        self,
+        entry_id: Union[int, str],
+        hours: float,
+    ) -> TimeEntryResult:
+        """Update one existing time entry."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete_time_entry(self, entry_id: Union[int, str]) -> TimeEntryResult:
+        """Delete one existing time entry."""
         raise NotImplementedError
