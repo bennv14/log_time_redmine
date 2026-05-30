@@ -6,7 +6,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Union
 
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 from flask_cors import CORS
@@ -241,7 +241,55 @@ def _build_check_items(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return list(grouped.values())
 
 
-def _serialize_redmine_time_entry(entry: RedmineTimeEntry) -> Dict[str, Any]:
+def _check_range(
+    client: AbstractRedmineTimeClient,
+    issue_ids: List[Union[int, str]],
+    from_date: str,
+    to_date: str,
+) -> Dict[str, List[Dict[str, Any]]]:
+    try:
+        redmine_entries = client.list_time_entries_in_range(
+            issue_ids=issue_ids,
+            from_date=from_date,
+            to_date=to_date,
+            user_id="me",
+        )
+        result: Dict[str, List[Dict[str, Any]]] = {}
+        for entry in redmine_entries:
+            issue_id_str = str(entry.issue_id)
+            if issue_id_str not in result:
+                result[issue_id_str] = []
+            result[issue_id_str].append(_serialize_redmine_time_entry(entry))
+        return result
+    except Exception as e:
+        app.logger.error("check range failed: %s", e)
+        raise
+
+
+def _check_user_range(
+    client: AbstractRedmineTimeClient,
+    from_date: str,
+    to_date: str,
+) -> Dict[str, List[Dict[str, Any]]]:
+    try:
+        redmine_entries = client.list_user_time_entries_in_range(
+            from_date=from_date,
+            to_date=to_date,
+            user_id="me",
+        )
+        result: Dict[str, List[Dict[str, Any]]] = {}
+        for entry in redmine_entries:
+            issue_id_str = str(entry.issue_id)
+            if issue_id_str not in result:
+                result[issue_id_str] = []
+            result[issue_id_str].append(_serialize_redmine_time_entry(entry))
+        return result
+    except Exception as e:
+        app.logger.error("check user range failed: %s", e)
+        raise
+
+
+def _serialize_redmine_time_entry(entry) -> Dict[str, Any]:
     raw_id = getattr(entry, "id", None)
     raw_issue_id = getattr(entry, "issue_id", None)
     return {
@@ -261,7 +309,7 @@ def _check_one(
     spent_on = item["spent_on"]
     web_hours = float(item["web_hours"])
     try:
-        redmine_entries = client.list_time_entries(issue_id=issue_id, spent_on=spent_on)
+        redmine_entries = client.list_time_entries(issue_id=issue_id, spent_on=spent_on, user_id="me")
         redmine_hours = float(sum(float(e.hours or 0) for e in redmine_entries))
         delta = round(web_hours - redmine_hours, 4)
         return {
@@ -465,6 +513,31 @@ def check_redmine_diff():
         output.append(_check_one(client, item))
 
     return jsonify({"items": output})
+
+
+@app.route("/api/sync/check/user-range", methods=["POST"])
+def check_redmine_diff_user_range():
+    data = request.get_json(silent=True) or {}
+    api_key = data.get("apiKey")
+    from_date = data.get("from_date", "").strip()
+    to_date = data.get("to_date", "").strip()
+
+    backend = app.config["REDMINE_CLIENT"]
+    if backend_requires_api_key(backend) and not api_key:
+        return jsonify({"error": "Vui lòng nhập khóa API"}), 400
+    if not from_date or not to_date:
+        return jsonify({"error": "Thiếu from_date hoặc to_date"}), 400
+
+    client: AbstractRedmineTimeClient = create_redmine_time_client(
+        backend,
+        api_key=api_key,
+    )
+
+    try:
+        result = _check_user_range(client, from_date, to_date)
+        return jsonify({"issues": result})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/sync/check/resolve/stream", methods=["POST"])

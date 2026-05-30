@@ -915,6 +915,13 @@ function collectSyncEntries() {
     return out;
 }
 
+function collectCheckData() {
+    const dates = [...appState.dates].sort();
+    const fromDate = dates[0] || '';
+    const toDate = dates[dates.length - 1] || '';
+    return { fromDate, toDate };
+}
+
 function getSyncEntriesForSubmit(collected) {
     if (!Array.isArray(collected) || collected.length === 0) return [];
     if (checkDiffRows.length === 0) return collected;
@@ -1446,27 +1453,100 @@ async function runCheckDiffStream(entries, apiKey) {
     }
 }
 
-function applyResolveCheckPayload(payload) {
-    const row = payload.check;
-    if (!row) return;
-    const key = makeDiffKey(row.issue_id, row.spent_on);
-    const idx = checkDiffRows.findIndex((item) => makeDiffKey(item.issue_id, item.spent_on) === key);
-    const nextRow = {
-        ...row,
-        status: row.error ? 'error' : 'done',
-        original_web_hours: row.web_hours,
-        web_task_snapshots: getTaskSnapshotsForIssueDate(row.issue_id, row.spent_on),
-        resolution: row.is_same ? 'same' : 'unresolved',
-        sync_error: payload.ok ? null : (payload.error || null),
-        sync_action: payload.action || null
-    };
-    if (idx >= 0) {
-        checkDiffRows[idx] = { ...checkDiffRows[idx], ...nextRow };
-    } else {
-        checkDiffRows.push(nextRow);
+async function runCheckDiffRange(checkData, apiKey) {
+    const { fromDate, toDate } = checkData;
+    if (!fromDate || !toDate) {
+        throw new Error('Không có ngày để kiểm tra');
     }
-}
 
+    const response = await fetch('/api/sync/check/user-range', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey, from_date: fromDate, to_date: toDate })
+    });
+
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    const redmineIssues = data.issues || {};
+
+    const webHoursMap = new Map();
+    appState.tasks.forEach(task => {
+        if (!task.taskId) return;
+        const issueId = String(task.taskId);
+        appState.dates.forEach(date => {
+            const hours = parseFloat(task.dayEntries[date] || 0);
+            if (hours > 0) {
+                const key = makeDiffKey(issueId, date);
+                webHoursMap.set(key, (webHoursMap.get(key) || 0) + hours);
+            }
+        });
+    });
+
+    const results = [];
+    for (const [key, webHours] of webHoursMap) {
+        const [issueId, spentOn] = key.split('__');
+        const redmineEntries = redmineIssues[issueId] || [];
+        const redmineEntriesForDate = redmineEntries.filter(e => e.spent_on === spentOn);
+        const redmineHours = redmineEntriesForDate.reduce((sum, e) => sum + (parseFloat(e.hours) || 0), 0);
+        const delta = Math.round((webHours - redmineHours) * 10000) / 10000;
+        const isSame = Math.abs(delta) < 1e-9;
+
+        results.push({
+            issue_id: issueId,
+            spent_on: spentOn,
+            web_hours: Math.round(webHours * 10000) / 10000,
+            redmine_hours: Math.round(redmineHours * 10000) / 10000,
+            delta,
+            is_same: isSame,
+            count_redmine_entries: redmineEntriesForDate.length,
+            redmine_entries: redmineEntriesForDate,
+            status: 'done',
+            original_web_hours: webHours,
+            web_task_snapshots: getTaskSnapshotsForIssueDate(issueId, spentOn),
+            resolution: isSame ? 'same' : 'unresolved'
+        });
+    }
+
+    for (const [issueId, redmineEntries] of Object.entries(redmineIssues)) {
+        const groupedByDate = new Map();
+        redmineEntries.forEach(e => {
+            const key = makeDiffKey(issueId, e.spent_on);
+            if (!groupedByDate.has(key)) {
+                groupedByDate.set(key, []);
+            }
+            groupedByDate.get(key).push(e);
+        });
+
+        groupedByDate.forEach((entries, key) => {
+            if (webHoursMap.has(key)) return;
+            const [id, spentOn] = key.split('__');
+            const redmineHours = entries.reduce((sum, e) => sum + (parseFloat(e.hours) || 0), 0);
+            if (redmineHours > 0) {
+                results.push({
+                    issue_id: id,
+                    spent_on: spentOn,
+                    web_hours: 0,
+                    redmine_hours: Math.round(redmineHours * 10000) / 10000,
+                    delta: Math.round((0 - redmineHours) * 10000) / 10000,
+                    is_same: false,
+                    count_redmine_entries: entries.length,
+                    redmine_entries: entries,
+                    status: 'done',
+                    original_web_hours: 0,
+                    web_task_snapshots: getTaskSnapshotsForIssueDate(id, spentOn),
+                    resolution: 'unresolved'
+                });
+            }
+        });
+    }
+
+    return results;
+}
+    
 async function runResolveCheckDiffStream(entries, apiKey) {
     const response = await fetch('/api/sync/check/resolve/stream', {
         method: 'POST',
@@ -1603,11 +1683,12 @@ async function handleCheckDiff() {
         showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
         return;
     }
-    const collected = collectSyncEntries();
-    if (collected.length === 0) {
-        showToast('Thông báo', 'Không có dữ liệu giờ làm việc để kiểm tra.', 'info');
+    const checkData = collectCheckData();
+    if (!checkData.fromDate || !checkData.toDate) {
+        showToast('Thông báo', 'Không có ngày để kiểm tra.', 'info');
         return;
     }
+    const collected = collectSyncEntries();
     _expandedCheckDiffErrors = new Set();
     checkDiffRows = buildPendingCheckDiffRows(collected);
     _collapsedCheckDiffEntries = new Set(
@@ -1620,7 +1701,14 @@ async function handleCheckDiff() {
     updateSyncActionButtons();
 
     try {
-        await runCheckDiffStream(collected, apiKey);
+        const results = await runCheckDiffRange(checkData, apiKey);
+        checkDiffRows = results;
+        checkDiffRows.forEach(row => {
+            _collapsedCheckDiffEntries.add(makeDiffKey(row.issue_id, row.spent_on));
+        });
+        renderCheckDiffRows();
+        renderInlineDiffIndicators();
+        showToast('Hoàn tất', `Đã check ${results.length} dòng.`, 'success');
     } catch (error) {
         showToast('Lỗi', error.message, 'danger');
     } finally {

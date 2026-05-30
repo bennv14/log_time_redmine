@@ -182,6 +182,45 @@ class TestHttpRedmineTimeClient(unittest.TestCase):
         self.assertEqual(rows[1].id, 12)
         self.assertEqual(mock_get.call_count, 2)
 
+    @patch("redmine_time_client.http.requests.get")
+    def test_list_user_time_entries_in_range_no_issue_filter(self, mock_get: MagicMock) -> None:
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "time_entries": [
+                {
+                    "id": 10,
+                    "issue": {"id": 42},
+                    "spent_on": "2025-04-01",
+                    "hours": 1.5,
+                    "created_on": "2025-04-01T01:00:00Z",
+                },
+                {
+                    "id": 11,
+                    "issue": {"id": 77},
+                    "spent_on": "2025-04-02",
+                    "hours": 3.0,
+                    "created_on": "2025-04-02T02:00:00Z",
+                },
+            ],
+            "total_count": 2,
+            "offset": 0,
+            "limit": 100,
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_get.return_value = mock_response
+
+        rows = self.client.list_user_time_entries_in_range("2025-04-01", "2025-04-30")
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].id, 10)
+        self.assertEqual(rows[0].issue_id, 42)
+        self.assertEqual(rows[1].id, 11)
+        self.assertEqual(rows[1].issue_id, 77)
+        call_params = mock_get.call_args[1]["params"]
+        self.assertNotIn("issue_id", call_params)
+        self.assertEqual(call_params["from"], "2025-04-01")
+        self.assertEqual(call_params["to"], "2025-04-30")
+
 
 class TestMockRedmineTimeClient(unittest.TestCase):
     @patch("redmine_time_client.mock.time.sleep")
@@ -271,6 +310,24 @@ class TestMockRedmineTimeClient(unittest.TestCase):
         delete_res = c.delete_time_entry(entry.id)
         self.assertTrue(delete_res.ok)
         self.assertEqual(c.list_time_entries(1, "2025-01-01"), [])
+
+    def test_list_user_time_entries_in_range_returns_all_entries_in_range(self) -> None:
+        existing = [
+            RedmineTimeEntry(10, 1, "2025-04-01", 1.5, "now"),
+            RedmineTimeEntry(11, 2, "2025-04-02", 2.0, "now"),
+            RedmineTimeEntry(12, 1, "2025-04-03", 3.0, "now"),
+            RedmineTimeEntry(13, 3, "2025-04-05", 1.0, "now"),
+        ]
+        c = MockRedmineTimeClient(existing_entries=existing)
+
+        rows = c.list_user_time_entries_in_range("2025-04-01", "2025-04-30")
+
+        self.assertEqual(len(rows), 4)
+        issue_ids = {r.issue_id for r in rows}
+        self.assertEqual(issue_ids, {1, 2, 3})
+        spent_ons = {r.spent_on for r in rows}
+        self.assertEqual(spent_ons, {"2025-04-01", "2025-04-02", "2025-04-03", "2025-04-05"})
+
 
 class TestRedmineClientFactory(unittest.TestCase):
     def test_parse_redmine_backend_from_env_mock_values(self) -> None:
@@ -475,6 +532,34 @@ class TestCheckDiffApi(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertEqual(data["check"]["redmine_hours"], 0)
         mock_client.delete_time_entry.assert_called_once_with("10")
+
+    @patch("app.create_redmine_time_client")
+    def test_check_user_range_returns_all_redmine_entries(self, mock_factory: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.list_user_time_entries_in_range.return_value = [
+            RedmineTimeEntry(10, 42, "2025-04-01", 1.5, "now"),
+            RedmineTimeEntry(11, 77, "2025-04-02", 2.0, "now"),
+        ]
+        mock_factory.return_value = mock_client
+
+        resp = self.client.post(
+            "/api/sync/check/user-range",
+            json={
+                "apiKey": "k",
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+            },
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn("issues", data)
+        self.assertEqual(len(data["issues"]), 2)
+        self.assertIn("42", data["issues"])
+        self.assertIn("77", data["issues"])
+        mock_client.list_user_time_entries_in_range.assert_called_once_with(
+            from_date="2025-04-01", to_date="2025-04-30", user_id="me"
+        )
 
 
 class TestUploadCsvApi(unittest.TestCase):

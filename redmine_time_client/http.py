@@ -93,6 +93,7 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
         self,
         issue_id: Union[int, str],
         spent_on: str,
+        user_id: Union[int, str, None] = None,
     ) -> List[RedmineTimeEntry]:
         headers = {"X-Redmine-API-Key": self._api_key}
         entries: List[RedmineTimeEntry] = []
@@ -100,14 +101,17 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
         limit = 100
 
         while True:
+            params = {
+                "issue_id": issue_id,
+                "spent_on": spent_on,
+                "offset": offset,
+                "limit": limit,
+            }
+            if user_id is not None:
+                params["user_id"] = user_id
             response = requests.get(
                 self._url,
-                params={
-                    "issue_id": issue_id,
-                    "spent_on": spent_on,
-                    "offset": offset,
-                    "limit": limit,
-                },
+                params=params,
                 headers=headers,
                 timeout=self._timeout,
             )
@@ -122,6 +126,115 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
                 item_issue_id = raw_issue.get("id", item.get("issue_id"))
                 if str(item_issue_id) != str(issue_id) or item_spent_on != spent_on:
                     continue
+                entries.append(
+                    RedmineTimeEntry(
+                        id=int(item.get("id")),
+                        issue_id=item_issue_id,
+                        spent_on=item_spent_on,
+                        hours=float(item.get("hours") or 0),
+                        created_on=str(item.get("created_on") or ""),
+                        comments=str(item.get("comments") or ""),
+                    )
+                )
+
+            offset += len(items)
+            if offset >= total_count or not items:
+                break
+
+        return entries
+
+    def list_time_entries_in_range(
+        self,
+        issue_ids: List[Union[int, str]],
+        from_date: str,
+        to_date: str,
+        user_id: Union[int, str, None] = None,
+    ) -> List[RedmineTimeEntry]:
+        if not issue_ids:
+            return []
+        headers = {"X-Redmine-API-Key": self._api_key}
+        entries: List[RedmineTimeEntry] = []
+        offset = 0
+        limit = 100
+        issue_ids_str = ",".join(str(i) for i in issue_ids)
+
+        while True:
+            params = {
+                "issue_id": issue_ids_str,
+                "from": from_date,
+                "to": to_date,
+                "offset": offset,
+                "limit": limit,
+            }
+            if user_id is not None:
+                params["user_id"] = user_id
+            response = requests.get(
+                self._url,
+                params=params,
+                headers=headers,
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+            body = response.json() or {}
+            items = body.get("time_entries", [])
+            total_count = int(body.get("total_count", len(items)))
+
+            for item in items:
+                raw_issue = item.get("issue") or {}
+                item_issue_id = raw_issue.get("id", item.get("issue_id"))
+                item_spent_on = str(item.get("spent_on") or "")
+                entries.append(
+                    RedmineTimeEntry(
+                        id=int(item.get("id")),
+                        issue_id=item_issue_id,
+                        spent_on=item_spent_on,
+                        hours=float(item.get("hours") or 0),
+                        created_on=str(item.get("created_on") or ""),
+                        comments=str(item.get("comments") or ""),
+                    )
+                )
+
+            offset += len(items)
+            if offset >= total_count or not items:
+                break
+
+        return entries
+
+    def list_user_time_entries_in_range(
+        self,
+        from_date: str,
+        to_date: str,
+        user_id: Union[int, str, None] = None,
+    ) -> List[RedmineTimeEntry]:
+        headers = {"X-Redmine-API-Key": self._api_key}
+        entries: List[RedmineTimeEntry] = []
+        offset = 0
+        limit = 100
+
+        while True:
+            params = {
+                "from": from_date,
+                "to": to_date,
+                "offset": offset,
+                "limit": limit,
+            }
+            if user_id is not None:
+                params["user_id"] = user_id
+            response = requests.get(
+                self._url,
+                params=params,
+                headers=headers,
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+            body = response.json() or {}
+            items = body.get("time_entries", [])
+            total_count = int(body.get("total_count", len(items)))
+
+            for item in items:
+                raw_issue = item.get("issue") or {}
+                item_issue_id = raw_issue.get("id", item.get("issue_id"))
+                item_spent_on = str(item.get("spent_on") or "")
                 entries.append(
                     RedmineTimeEntry(
                         id=int(item.get("id")),

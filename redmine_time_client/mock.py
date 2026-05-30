@@ -102,9 +102,38 @@ class MockRedmineTimeClient(AbstractRedmineTimeClient):
         self,
         issue_id: Union[int, str],
         spent_on: str,
+        user_id: Union[int, str, None] = None,
     ) -> List[RedmineTimeEntry]:
         key = (str(issue_id), spent_on)
         return list(self._entries.get(key, []))
+
+    def list_time_entries_in_range(
+        self,
+        issue_ids: List[Union[int, str]],
+        from_date: str,
+        to_date: str,
+        user_id: Union[int, str, None] = None,
+    ) -> List[RedmineTimeEntry]:
+        issue_ids_set = {str(i) for i in issue_ids}
+        result = []
+        for (entry_issue_id, entry_spent_on), entries in self._entries.items():
+            if entry_issue_id not in issue_ids_set:
+                continue
+            if from_date <= entry_spent_on <= to_date:
+                result.extend(entries)
+        return result
+
+    def list_user_time_entries_in_range(
+        self,
+        from_date: str,
+        to_date: str,
+        user_id: Union[int, str, None] = None,
+    ) -> List[RedmineTimeEntry]:
+        result = []
+        for (entry_issue_id, entry_spent_on), entries in self._entries.items():
+            if from_date <= entry_spent_on <= to_date:
+                result.extend(entries)
+        return result
 
     def update_time_entry(
         self,
