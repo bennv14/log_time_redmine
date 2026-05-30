@@ -786,6 +786,7 @@ Matrix Table
   white-space: normal;
   word-break: break-word;
   border-right: 1px solid var(--gray-200) !important;
+  font-weight: 700;
 }
 
 /* third-col is the LAST sticky column — add a strong right-side drop-shadow
@@ -873,6 +874,20 @@ Table Inputs
   font-weight: 700;
   color: var(--primary);
   background: var(--primary-soft);
+}
+
+#matrix-table input[type="number"].invalid-cell {
+  border-color: var(--danger) !important;
+  background-color: var(--danger-soft) !important;
+  color: var(--danger) !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2) !important;
+  animation: shake 0.4s ease-in-out;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
 }
 
 #matrix-table input[type="number"]::-webkit-outer-spin-button,
@@ -969,6 +984,27 @@ Table Links & Actions
   background-color: var(--danger-soft);
   color: var(--danger);
   box-shadow: var(--shadow-sm), var(--glow-danger);
+}
+
+.btn-icon-xs {
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  color: var(--gray-500);
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+.btn-icon-xs:hover {
+  background-color: var(--gray-100);
+  color: var(--gray-800);
 }
 
 /* ============================================================

@@ -337,6 +337,19 @@ async function uploadCsvFile(file) {
         
         appState = data;
         warnIfCsvOutsideCurrentMonth(appState.dates || []);
+        
+        // Show validation errors if any
+        if (data.validationErrors && data.validationErrors.length > 0) {
+            const errorList = data.validationErrors.map(e => `<li>${escapeHtml(e)}</li>`).join('');
+            showToast('Cảnh báo dữ liệu', 
+                `<div style="max-height: 200px; overflow-y: auto;">
+                    <p>Phát hiện một số vấn đề trong tệp CSV:</p>
+                    <ul class="ps-3 mb-0">${errorList}</ul>
+                </div>`, 
+                'warning'
+            );
+        }
+
         renderApp();
         clearCheckDiffState();
         showToast('Thành công', 'Đã tải dữ liệu CSV thành công.', 'success');
@@ -406,19 +419,40 @@ function initCsvDragAndDrop() {
 
 function updateTotals() {
     let totalHours = 0;
+    const dayTotals = {};
+    appState.dates.forEach(d => dayTotals[d] = 0);
+
     appState.tasks.forEach((task, index) => {
         let taskTotal = 0;
         appState.dates.forEach(date => {
-            taskTotal += parseFloat(task.dayEntries[date] || 0);
+            const h = parseFloat(task.dayEntries[date] || 0);
+            taskTotal += h;
+            dayTotals[date] += h;
         });
         task.totalHours = taskTotal;
         totalHours += taskTotal;
         
         const totalCell = document.getElementById(`total-${index}`);
         if (totalCell) {
-            totalCell.innerText = taskTotal > 0 ? taskTotal.toFixed(2) : '—';
+            totalCell.innerText = taskTotal !== 0 ? taskTotal.toFixed(2) : '—';
         }
     });
+
+    // Update Day Totals (bottom row)
+    appState.dates.forEach(date => {
+        const dayTotalCell = document.getElementById(`day-total-${date}`);
+        if (dayTotalCell) {
+            const v = dayTotals[date];
+            dayTotalCell.textContent = v !== 0 ? v.toFixed(2) : '—';
+        }
+    });
+
+    // Update grand total in bottom row
+    const grandTotalCell = document.getElementById('day-total-all');
+    if (grandTotalCell) {
+        grandTotalCell.textContent = totalHours !== 0 ? totalHours.toFixed(2) : '—';
+    }
+
     appState.effortSum = totalHours;
     document.getElementById('summary-hours').innerText = totalHours.toFixed(2);
 }
@@ -499,7 +533,7 @@ function renderTable() {
                 <td class="sticky-col first-col">${issueCell}</td>
                 <td class="sticky-col second-col" title="${escapeAttr(task.taskName || '')}">${escapeHtml(task.taskName || '')}</td>
                 <td class="sticky-col third-col text-center fw-bold" id="total-${taskIndex}">
-                    ${task.totalHours > 0 ? task.totalHours.toFixed(2) : '—'}
+                    ${task.totalHours !== 0 ? task.totalHours.toFixed(2) : '—'}
                 </td>
             `;
 
@@ -513,15 +547,16 @@ function renderTable() {
                 td.className = `text-center p-1${isWeekend ? ' weekend-col' : ''}`;
                 const val = task.dayEntries[date] || 0;
                 const hoursNum = parseFloat(val || 0) || 0;
-                if (hoursNum > 0) dayTotals[date] += hoursNum;
+                dayTotals[date] += hoursNum;
                 
                 const input = document.createElement('input');
                 input.type = 'number';
                 input.step = '0.5';
-                input.min = '0';
-                input.max = '24';
                 input.placeholder = ' ';
-                input.value = val > 0 ? val : '';
+                input.value = val !== 0 ? val : '';
+                if (val < 0 || val > 24) {
+                    input.classList.add('invalid-cell');
+                }
                 
                 input.dataset.row = String(taskIndex);
                 input.dataset.col = String(3 + appState.dates.indexOf(date));
@@ -542,11 +577,15 @@ function renderTable() {
                 });
 
                 input.addEventListener('change', (e) => {
-                    let newVal = parseFloat(e.target.value) || 0;
-                    if (newVal < 0) newVal = 0;
-                    if (newVal > 24) newVal = 24;
-                    newVal = Math.round(newVal * 2) / 2;
-                    e.target.value = newVal > 0 ? String(newVal) : '';
+                    let newVal = parseFloat(e.target.value);
+                    if (isNaN(newVal)) newVal = 0;
+                    
+                    if (newVal < 0 || newVal > 24) {
+                        e.target.classList.add('invalid-cell');
+                    } else {
+                        e.target.classList.remove('invalid-cell');
+                    }
+                    
                     appState.tasks[taskIndex].dayEntries[date] = newVal;
                     updateTotals(); // Re-render to update totals without rebuilding the table
                     updateSummaryMetrics();
@@ -588,7 +627,7 @@ function renderTable() {
         let totalRowHtml = `
             <td class="sticky-col first-col">Tổng ngày</td>
             <td class="sticky-col second-col"></td>
-            <td class="sticky-col third-col text-center fw-bold">${appState.effortSum > 0 ? appState.effortSum.toFixed(2) : '—'}</td>
+            <td class="sticky-col third-col text-center fw-bold" id="day-total-all">${appState.effortSum !== 0 ? appState.effortSum.toFixed(2) : '—'}</td>
         `;
         totalTr.innerHTML = totalRowHtml;
         appState.dates.forEach((date) => {
@@ -596,8 +635,9 @@ function renderTable() {
             const isWeekend = d.getDay() === 0 || d.getDay() === 6;
             const td = document.createElement('td');
             td.className = `text-center${isWeekend ? ' weekend-col' : ''}`;
+            td.id = `day-total-${date}`;
             const v = dayTotals[date] || 0;
-            td.textContent = v > 0 ? v.toFixed(2) : '—';
+            td.textContent = v !== 0 ? v.toFixed(2) : '—';
             totalTr.appendChild(td);
         });
         const tdAction = document.createElement('td');
@@ -1205,11 +1245,12 @@ async function mutateRedmineTimeEntry({ entryId, issueId, spentOn, webHours, hou
 }
 
 async function handleCheckDiffEntryAction(btn) {
-    const apiKey = document.getElementById('api-key').value;
-    if (!apiKey) {
-        showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
+    const apiKeyInput = document.getElementById('api-key');
+    if (!apiKeyInput.value) {
+        apiKeyInput.reportValidity();
         return;
     }
+    const apiKey = apiKeyInput.value;
     const action = btn.getAttribute('data-entry-action');
     const entryId = btn.getAttribute('data-entry-id');
     const issueId = btn.getAttribute('data-issue');
@@ -1260,13 +1301,27 @@ async function handleCheckDiffEntryAction(btn) {
     }
 }
 
+function hasInvalidHours() {
+    return appState.tasks.some(task => 
+        Object.values(task.dayEntries).some(h => {
+            const val = parseFloat(h);
+            return val < 0 || val > 24;
+        })
+    );
+}
+
 async function handleCheckDiff() {
     if (_checkDiffInProgress || _checkDiffResolveInProgress) return;
-    const apiKey = document.getElementById('api-key').value;
-    if (!apiKey) {
-        showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
+    if (hasInvalidHours()) {
+        showAlert('Lỗi dữ liệu: Vui lòng sửa các ô có giờ làm việc âm hoặc vượt quá 24h trước khi tiếp tục.');
         return;
     }
+    const apiKeyInput = document.getElementById('api-key');
+    if (!apiKeyInput.value) {
+        apiKeyInput.reportValidity();
+        return;
+    }
+    const apiKey = apiKeyInput.value;
     const checkData = collectCheckData();
     if (!checkData.fromDate || !checkData.toDate) {
         showToast('Thông báo', 'Không có ngày để kiểm tra.', 'info');
@@ -1313,11 +1368,16 @@ async function handleCheckDiff() {
 async function handleSync(e) {
     if (e) e.preventDefault();
     if (_checkDiffInProgress || _checkDiffResolveInProgress) return;
-    const apiKey = document.getElementById('api-key').value;
-    if (!apiKey) {
-        showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
+    if (hasInvalidHours()) {
+        showAlert('Lỗi dữ liệu: Vui lòng sửa các ô có giờ làm việc âm hoặc vượt quá 24h trước khi tiếp tục.');
         return;
     }
+    const apiKeyInput = document.getElementById('api-key');
+    if (!apiKeyInput.value) {
+        apiKeyInput.reportValidity();
+        return;
+    }
+    const apiKey = apiKeyInput.value;
     const checkData = collectCheckData();
     if (!checkData.fromDate || !checkData.toDate) {
         showToast('Thông báo', 'Không có ngày để đồng bộ.', 'info');
@@ -1374,11 +1434,16 @@ async function handleSync(e) {
 }
 
 async function handleResolveCheckDiff() {
-    const apiKey = document.getElementById('api-key').value;
-    if (!apiKey) {
-        showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
+    if (hasInvalidHours()) {
+        showAlert('Lỗi dữ liệu: Vui lòng sửa các ô có giờ làm việc âm hoặc vượt quá 24h trước khi tiếp tục.');
         return;
     }
+    const apiKeyInput = document.getElementById('api-key');
+    if (!apiKeyInput.value) {
+        apiKeyInput.reportValidity();
+        return;
+    }
+    const apiKey = apiKeyInput.value;
     const collected = collectSyncEntries();
     const filtered = getCheckDiffEntriesForResolve(collected);
     if (filtered.length === 0) {
@@ -1853,6 +1918,15 @@ document.addEventListener('DOMContentLoaded', () => {
         hideDiffPopover();
     });
 });
+
+function showAlert(message) {
+    const modalBody = document.getElementById('customAlertModalBody');
+    if (modalBody) {
+        modalBody.innerText = message;
+    }
+    const modal = new bootstrap.Modal(document.getElementById('customAlertModal'));
+    modal.show();
+}
 
 function showToast(title, message, type = 'primary') {
   const toastEl = document.getElementById('liveToast');

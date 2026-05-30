@@ -587,9 +587,37 @@ class TestUploadCsvApi(unittest.TestCase):
         data = resp.get_json()
         self.assertEqual(data["memberName"], "Nguyen Van Ben")
         self.assertEqual(data["role"], "Dev App")
+        # Sum is 76.0 because #19091 (empty No) has 0 hours in the sample CSV
         self.assertEqual(data["effortSum"], 76.0)
         self.assertIn("2026-04-01", data["dates"])
         self.assertEqual(data["tasks"][0]["taskId"], 1)
+
+    def test_upload_empty_no_column_includes_task(self) -> None:
+        from io import BytesIO
+        csv_content = (
+            ",Member:,Test User,,,,\n"
+            ",Role:,Developer,,,,\n"
+            ",No,Task,Task URL,Task Effort,5/30\n"
+            ",1,Task 1,https://redmine.jprep.jp/redmine/issues/1,1,1\n"
+            ",,Task 2,https://redmine.jprep.jp/redmine/issues/2,2,2\n"
+            ",3,Task 3,https://redmine.jprep.jp/redmine/issues/3,3,3\n"
+        )
+        data = {
+            'file': (BytesIO(csv_content.encode('utf-8')), 'repro.csv')
+        }
+        resp = self.client.post(
+            "/api/upload",
+            data=data,
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        tasks = data['tasks']
+        task_names = [t['taskName'] for t in tasks]
+        self.assertIn('Task 2', task_names)
+        self.assertEqual(len(tasks), 3)
+        self.assertEqual(data['effortSum'], 6.0)
+
 
 
 if __name__ == "__main__":

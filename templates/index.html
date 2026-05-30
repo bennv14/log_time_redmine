@@ -102,19 +102,22 @@
 
                         <form id="sync-form" class="d-flex flex-wrap align-items-center gap-2">
                             <label for="api-key" class="visually-hidden">API Key Redmine</label>
-                            <div class="input-group input-group-sm flex-grow-1" style="min-width: 260px;">
-                                <input class="form-control" type="password" id="api-key" placeholder="Nhập API Key Redmine" autocomplete="off" autocapitalize="off" spellcheck="false" required>
-                                <button class="btn btn-outline-secondary" type="button" id="btn-toggle-api-key" aria-label="Hiện hoặc ẩn API key">
-                                    <i class="bi bi-eye"></i>
-                                </button>
-                                <button class="btn btn-outline-secondary" type="button" id="btn-clear-api-key" aria-label="Xóa API key">
-                                    <i class="bi bi-x-lg"></i>
-                                </button>
+                            <div class="position-relative flex-grow-1" style="min-width: 260px;">
+                                <i class="bi bi-key position-absolute top-50 start-0 translate-middle-y ms-2 text-secondary" style="font-size: 0.9rem; pointer-events: none;"></i>
+                                <input class="form-control form-control-sm" type="password" id="api-key" placeholder="Nhập API Key Redmine" autocomplete="off" autocapitalize="off" spellcheck="false" required style="padding-left: 2.2rem; padding-right: 4rem;">
+                                <div class="position-absolute top-50 end-0 translate-middle-y d-flex gap-1 me-1">
+                                    <button class="btn-icon-xs" type="button" id="btn-toggle-api-key" title="Hiện hoặc ẩn API key">
+                                        <i class="bi bi-eye"></i>
+                                    </button>
+                                    <button class="btn-icon-xs" type="button" id="btn-clear-api-key" title="Xóa API key">
+                                        <i class="bi bi-x-lg"></i>
+                                    </button>
+                                </div>
                             </div>
                             <button type="button" class="btn btn-outline-primary btn-sm text-nowrap" id="btn-check-diff">
                                 <i class="bi bi-search me-1"></i>Check
                             </button>
-                            <button type="submit" class="btn btn-purple btn-sm text-nowrap" id="btn-sync">
+                            <button type="submit" class="btn btn-indigo btn-sm text-nowrap" id="btn-sync">
                                 <i class="bi bi-repeat me-1"></i>Đồng bộ
                             </button>
                         </form>
@@ -401,6 +404,26 @@
             </button>
         </div>
         <div class="diff-popover-status" id="diff-popover-status" hidden></div>
+    </div>
+
+    <!-- Alert Modal -->
+    <div class="modal fade" id="customAlertModal" tabindex="-1" aria-labelledby="customAlertModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header bg-danger-soft">
+                    <h6 class="modal-title fw-semibold text-danger" id="customAlertModalLabel">
+                        <i class="bi bi-exclamation-triangle-fill me-2"></i>Thông báo lỗi
+                    </h6>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Đóng"></button>
+                </div>
+                <div class="modal-body" id="customAlertModalBody">
+                    <!-- Nội dung thông báo sẽ được chèn ở đây -->
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-sm btn-danger" data-bs-dismiss="modal">Đã hiểu</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>

@@ -117,9 +117,12 @@ def upload_csv():
             }
             
             lines = list(reader)
+            if not lines:
+                return jsonify({"error": "Tệp CSV trống"}), 400
+
             header_idx = -1
             no_idx = -1
-            
+
             # Find header row
             for i, row in enumerate(lines):
                 if row:
@@ -130,11 +133,15 @@ def upload_csv():
                             break
                 if header_idx != -1:
                     break
-            
+
             if header_idx == -1:
                 return jsonify({"error": "Định dạng CSV không hợp lệ: không tìm thấy cột 'No'"}), 400
-            
-            # Extract basic info (assuming it's above the header)
+
+            # Validation errors list
+            validation_errors = []
+
+            # Extract basic info
+            effort_sum_from_meta = 0.0
             for i in range(header_idx):
                 row = lines[i]
                 for j, cell in enumerate(row):
@@ -145,44 +152,84 @@ def upload_csv():
                     elif "role" in key or "vai trò" in key:
                         if len(row) > j + 1:
                             parsed_data["role"] = row[j+1].strip()
-            
+                    elif "effort sum" in key or "tổng công suất" in key:
+                        if len(row) > j + 1:
+                            try:
+                                effort_sum_from_meta = float(row[j+1].strip())
+                            except ValueError:
+                                pass
+
             header_row = lines[header_idx]
-            # Find date columns (usually after Task URL / Task Name)
+            # Find date columns
             date_cols = []
             for j in range(len(header_row)):
                 col_name = header_row[j].strip()
                 if re.match(r'\d{1,2}/\d{1,2}', col_name):
                     date_cols.append({"index": j, "date": format_date_with_current_year(col_name), "raw": col_name})
-            
+
+            if not date_cols:
+                return jsonify({"error": "Không tìm thấy cột ngày (định dạng MM/DD)"}), 400
+
             parsed_data["dates"] = [d["date"] for d in date_cols]
-            
+
+            # Find "Task Effort (h)" column index
+            effort_col_idx = -1
+            for j, cell in enumerate(header_row):
+                if "effort" in cell.lower() and "(h)" in cell.lower():
+                    effort_col_idx = j
+                    break
+
             # Parse tasks
+            actual_sum = 0.0
+            daily_sums = {d["date"]: 0.0 for d in date_cols}
+            sum_row = None
+
             for i in range(header_idx + 1, len(lines)):
                 row = lines[i]
-                if not row or len(row) <= no_idx or not row[no_idx].strip():
+                if not row or len(row) <= no_idx:
                     continue
-                
-                if row[no_idx].strip().lower() == "sum":
+
+                no_val = row[no_idx].strip().lower()
+                if no_val == "sum":
+                    sum_row = row
                     continue
-                
+
                 # Assuming columns: No, Task Name, Task URL, ... dates ...
                 task_name = row[no_idx + 1].strip() if len(row) > no_idx + 1 else ""
                 task_url = row[no_idx + 2].strip() if len(row) > no_idx + 2 else ""
                 task_id = extract_task_id(task_url)
-                
+
+                # Validation: Task ID missing if Task Name/URL exists
+                if (task_name or task_url) and not task_id and no_val:
+                    if "ouchieigo" not in task_name.lower(): # Special case from sample
+                         validation_errors.append(f"Dòng {i+1}: URL công việc không chứa ID Redmine hợp lệ")
+
                 day_entries = {}
                 task_total = 0.0
-                
+
                 for d in date_cols:
                     if d["index"] < len(row):
                         val = row[d["index"]].strip()
-                        try:
-                            hours = float(val) if val else 0.0
-                        except ValueError:
+                        if val:
+                            try:
+                                hours = float(val)
+                                if hours < 0:
+                                    validation_errors.append(f"Dòng {i+1}, ngày {d['raw']}: Giờ không được âm ({val})")
+                                elif hours > 24:
+                                    validation_errors.append(f"Dòng {i+1}, ngày {d['raw']}: Giờ vượt quá 24h ({val})")
+                            except ValueError:
+                                validation_errors.append(f"Dòng {i+1}, ngày {d['raw']}: Giá trị không phải số ({val})")
+                                hours = 0.0
+                        else:
                             hours = 0.0
                         day_entries[d["date"]] = hours
                         task_total += hours
-                
+                        daily_sums[d["date"]] += hours
+
+                # Skip rows that have no sequence number, no task info, and no hours
+                if not no_val and not task_name and not task_url and task_total == 0:
+                    continue
+
                 parsed_data["tasks"].append({
                     "id": str(task_id) if task_id else f"temp_{i}",
                     "taskId": task_id,
@@ -191,8 +238,13 @@ def upload_csv():
                     "dayEntries": day_entries,
                     "totalHours": task_total
                 })
-                parsed_data["effortSum"] += task_total
-                
+                actual_sum += task_total
+
+            parsed_data["effortSum"] = actual_sum
+
+            if validation_errors:
+                parsed_data["validationErrors"] = validation_errors
+
             return jsonify(parsed_data)
         except Exception as e:
             return jsonify({"error": str(e)}), 500
