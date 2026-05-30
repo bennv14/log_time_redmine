@@ -1497,6 +1497,20 @@ Sync/Request History/Check Diff Overlays
   border-left-color: var(--danger);
 }
 
+.check-diff-redmine-greater-row td,
+.check-diff-redmine-greater-row:hover td {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.check-diff-redmine-greater-row td:first-child {
+  border-left-color: var(--danger);
+}
+
+.check-diff-web-greater-row td:first-child {
+  border-left-color: var(--warning);
+}
+
 .check-diff-entry-detail-row td {
   padding: 0 0.875rem 0.875rem;
 }
@@ -1719,6 +1733,7 @@ Inline Diff Indicators (badge pill, tooltip, popover)
 /* --- Cell-level tint (applied to <td>) --- */
 #matrix-table td.diff-cell-same    { background-color: rgba(16, 185, 129, 0.15) !important; }
 #matrix-table td.diff-cell-diff    { background-color: rgba(245, 158, 11, 0.20) !important; box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.3) !important; }
+#matrix-table td.diff-cell-redmine-greater { background-color: rgba(239, 68, 68, 0.18) !important; box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.3) !important; }
 #matrix-table td.diff-cell-update-web     { background-color: rgba(79, 70, 229, 0.15) !important; }
 #matrix-table td.diff-cell-accept-redmine { background-color: rgba(124, 58, 237, 0.15) !important; }
 #matrix-table td.diff-cell-error   { background-color: rgba(239, 68, 68, 0.15) !important; }
@@ -1726,6 +1741,7 @@ Inline Diff Indicators (badge pill, tooltip, popover)
 /* Keep tint on hover/focus rows too */
 #matrix-table tbody tr:hover td.diff-cell-diff    { background-color: rgba(245, 158, 11, 0.25) !important; }
 #matrix-table tbody tr:hover td.diff-cell-same    { background-color: rgba(16, 185, 129, 0.2) !important; }
+#matrix-table tbody tr:hover td.diff-cell-redmine-greater { background-color: rgba(239, 68, 68, 0.24) !important; }
 #matrix-table tbody tr:hover td.diff-cell-update-web     { background-color: rgba(79, 70, 229, 0.2) !important; }
 #matrix-table tbody tr:hover td.diff-cell-accept-redmine { background-color: rgba(124, 58, 237, 0.2) !important; }
 #matrix-table tbody tr:hover td.diff-cell-error   { background-color: rgba(239, 68, 68, 0.2) !important; }

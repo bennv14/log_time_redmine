@@ -65,6 +65,9 @@ def _log_time_entry_result(entry: Dict[str, Any], res: TimeEntryResult) -> None:
         "ok": res.ok,
         "status_code": res.status_code,
         "error": res.error_message,
+        "request_url": res.request_url,
+        "request_headers": res.request_headers,
+        "request_payload": res.request_payload,
         "response_text": res.response_text,
     }
     _time_entry_logger.info(json.dumps(record, ensure_ascii=False))
@@ -215,7 +218,13 @@ def _post_one(
         return eid, entry, res
     except Exception as e:
         app.logger.error("entry task failed: %s", e)
-        res = TimeEntryResult(ok=False, error_message=str(e))
+        res = TimeEntryResult(
+            ok=False,
+            error_message=str(e),
+            request_url=None,
+            request_headers=None,
+            request_payload=None,
+        )
         _log_time_entry_result(entry, res)
         return eid, entry, res
 

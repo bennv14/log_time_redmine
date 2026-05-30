@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import List, Union
 
@@ -45,6 +46,20 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
         path_without_json = self._path[:-5] if self._path.endswith(".json") else self._path
         return f"{self._base}{path_without_json}/{entry_id}.json"
 
+    def _parse_error(self, text: str, status_code: int) -> str:
+        if not text:
+            return f"HTTP {status_code}"
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict) and "errors" in data:
+                errors = data["errors"]
+                if isinstance(errors, list):
+                    return "\n".join(str(e) for e in errors)
+                return str(errors)
+        except Exception:
+            pass
+        return text[:2000]
+
     def post_time_entry(
         self,
         issue_id: Union[int, str],
@@ -77,17 +92,29 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
                     ok=True,
                     status_code=response.status_code,
                     response_text=text[:2000] if text else None,
+                    request_url=self._url,
+                    request_headers=headers,
+                    request_payload=payload,
                 )
-            err = text[:2000] if text else f"HTTP {response.status_code}"
+            err = self._parse_error(text, response.status_code)
             return TimeEntryResult(
                 ok=False,
                 status_code=response.status_code,
                 error_message=err,
                 response_text=text[:2000] if text else None,
+                request_url=self._url,
+                request_headers=headers,
+                request_payload=payload,
             )
         except Exception as e:
             logger.warning("post_time_entry failed: %s", e)
-            return TimeEntryResult(ok=False, error_message=str(e))
+            return TimeEntryResult(
+                ok=False,
+                error_message=str(e),
+                request_url=self._url,
+                request_headers=headers,
+                request_payload=payload,
+            )
 
     def list_time_entries(
         self,
@@ -263,8 +290,9 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
             "X-Redmine-API-Key": self._api_key,
         }
         try:
+            url = self._entry_url(entry_id)
             response = requests.put(
-                self._entry_url(entry_id),
+                url,
                 json=payload,
                 headers=headers,
                 timeout=self._timeout,
@@ -275,23 +303,36 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
                     ok=True,
                     status_code=response.status_code,
                     response_text=text[:2000] if text else None,
+                    request_url=url,
+                    request_headers=headers,
+                    request_payload=payload,
                 )
-            err = text[:2000] if text else f"HTTP {response.status_code}"
+            err = self._parse_error(text, response.status_code)
             return TimeEntryResult(
                 ok=False,
                 status_code=response.status_code,
                 error_message=err,
                 response_text=text[:2000] if text else None,
+                request_url=url,
+                request_headers=headers,
+                request_payload=payload,
             )
         except Exception as e:
             logger.warning("update_time_entry failed: %s", e)
-            return TimeEntryResult(ok=False, error_message=str(e))
+            return TimeEntryResult(
+                ok=False,
+                error_message=str(e),
+                request_url=self._entry_url(entry_id),
+                request_headers=headers,
+                request_payload=payload,
+            )
 
     def delete_time_entry(self, entry_id: Union[int, str]) -> TimeEntryResult:
         headers = {"X-Redmine-API-Key": self._api_key}
+        url = self._entry_url(entry_id)
         try:
             response = requests.delete(
-                self._entry_url(entry_id),
+                url,
                 headers=headers,
                 timeout=self._timeout,
             )
@@ -301,14 +342,23 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
                     ok=True,
                     status_code=response.status_code,
                     response_text=text[:2000] if text else None,
+                    request_url=url,
+                    request_headers=headers,
                 )
-            err = text[:2000] if text else f"HTTP {response.status_code}"
+            err = self._parse_error(text, response.status_code)
             return TimeEntryResult(
                 ok=False,
                 status_code=response.status_code,
                 error_message=err,
                 response_text=text[:2000] if text else None,
+                request_url=url,
+                request_headers=headers,
             )
         except Exception as e:
             logger.warning("delete_time_entry failed: %s", e)
-            return TimeEntryResult(ok=False, error_message=str(e))
+            return TimeEntryResult(
+                ok=False,
+                error_message=str(e),
+                request_url=url,
+                request_headers=headers,
+            )

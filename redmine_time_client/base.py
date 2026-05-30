@@ -13,6 +13,9 @@ class TimeEntryResult:
     status_code: Optional[int] = None
     error_message: Optional[str] = None
     response_text: Optional[str] = None
+    request_url: Optional[str] = None
+    request_headers: Optional[dict] = None
+    request_payload: Optional[dict] = None
 
 
 @dataclass

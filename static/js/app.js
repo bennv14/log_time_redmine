@@ -251,12 +251,18 @@ function renderRequestHistory() {
                 }
                 const subTr = document.createElement('tr');
                 subTr.className = 'rh-sub-row';
+                const subDetailText = subRow.detail || '—';
+                const subLines = subDetailText.split('\n').map(l => l.trim()).filter(l => l);
+                const subDetailHtml = subLines.length > 1
+                    ? subLines.map(l => `<div class="text-danger fw-semibold">${escapeHtml(l)}</div>`).join('')
+                    : (subRow.status === 'error' ? `<span class="text-danger fw-semibold">${escapeHtml(subDetailText)}</span>` : escapeHtml(subDetailText));
+
                 subTr.innerHTML = `
                     <td></td>
                     <td class="text-muted small" colspan="2"><span class="rh-sub-index">#${group.count - idx}</span> ${escapeHtml(subRow.requested_at)}</td>
                     <td class="text-end">${Number(subRow.hours).toFixed(2)}</td>
                     <td>${subStatusHtml}</td>
-                    <td class="small text-break" colspan="2" style="max-width: 18rem;">${escapeHtml(subRow.detail || '—')}</td>
+                    <td class="small text-break" colspan="2" style="max-width: 18rem;">${subDetailHtml}</td>
                 `;
                 tbody.appendChild(subTr);
             });
@@ -1022,15 +1028,19 @@ function renderSyncResults() {
         } else {
             statusHtml = '<span class="badge text-bg-danger">Thất bại</span>';
         }
-        const detail = row.error
-            ? (row.httpStatus != null ? `[${row.httpStatus}] ` : '') + escapeHtml(String(row.error).slice(0, 500))
+        const errorText = row.error ? String(row.error) : '';
+        const lines = errorText.split('\n').map(l => l.trim()).filter(l => l);
+        const detailHtml = lines.length > 0
+            ? (row.httpStatus != null ? `<div class="text-muted mb-1">[${row.httpStatus}]</div>` : '') + 
+              lines.map(l => `<div class="text-danger fw-semibold" style="font-size: 0.8rem;">${escapeHtml(l)}</div>`).join('')
             : (row.status === 'ok' ? '—' : '');
+
         overlayTr.innerHTML = `
             <td class="text-nowrap">${escapeHtml(String(row.issue_id))}</td>
             <td class="text-nowrap">${escapeHtml(row.spent_on)}</td>
             <td class="text-end">${Number(row.hours).toFixed(2)}</td>
             <td>${statusHtml}</td>
-            <td class="small text-break" style="max-width: 18rem;">${detail || '—'}</td>
+            <td class="small text-break" style="max-width: 18rem;">${detailHtml || '—'}</td>
         `;
         if (overlayTbody) {
             overlayTbody.appendChild(overlayTr);
@@ -1177,13 +1187,31 @@ function renderCheckDiffStatus(row, rowKey) {
         return '<span class="badge text-bg-secondary"><span class="spinner-border spinner-border-sm me-1" style="width:0.65rem;height:0.65rem;"></span>Đang check</span>';
     }
     if (row.error) {
-        return `<button type="button" class="btn btn-sm btn-outline-danger check-diff-error-toggle" data-check-error-key="${escapeAttr(rowKey)}">Xem lỗi</button>`;
+        return `
+            <div class="d-flex align-items-center gap-1">
+                <button type="button" class="btn btn-sm btn-outline-danger check-diff-error-toggle" data-check-error-key="${escapeAttr(rowKey)}" title="${escapeAttr(row.error)}">Lỗi</button>
+                <button type="button" class="btn btn-sm btn-outline-primary py-0 px-1" onclick="handleCheckDiff()" title="Thử lại">
+                    <i class="bi bi-arrow-clockwise"></i>
+                </button>
+            </div>
+        `;
     }
     if (row.sync_error) {
-        return `<span class="badge text-bg-danger" title="${escapeAttr(row.sync_error)}">Không đồng bộ được</span>`;
+        const errorText = String(row.sync_error);
+        const lines = errorText.split('\n').map(l => l.trim()).filter(l => l);
+        const errorHtml = lines.map(l => `<div class="sync-error-item">${escapeHtml(l)}</div>`).join('');
+        return `
+            <div class="d-flex flex-column align-items-start gap-1">
+                <span class="badge text-bg-danger">Đồng bộ lỗi</span>
+                <div class="sync-error-list">${errorHtml}</div>
+            </div>
+        `;
     }
     if (row.resolution === 'same') {
         return '<span class="badge text-bg-success">Giống nhau</span>';
+    }
+    if (row.redmine_hours !== null && row.web_hours !== null && row.redmine_hours > row.web_hours) {
+        return '<span class="badge bg-danger text-white">Cần điều chỉnh thủ công</span>';
     }
     if (row.resolution === 'update_web') {
         return '<span class="badge text-bg-primary">Update theo Web</span>';
@@ -1288,14 +1316,29 @@ function upsertCheckDiffRowFromCheck(check) {
     }
 }
 
+function applyResolveCheckPayload(payload) {
+    if (payload.check) {
+        upsertCheckDiffRowFromCheck(payload.check);
+    }
+    const key = makeDiffKey(payload.issue_id, payload.spent_on);
+    const row = checkDiffRows.find((r) => makeDiffKey(r.issue_id, r.spent_on) === key);
+    if (row) {
+        row.sync_error = payload.ok ? null : payload.error;
+        row.sync_action = payload.action;
+    }
+}
+
 function renderCheckDiffErrorPanel(row, rowKey) {
     if (!row.error || !_expandedCheckDiffErrors.has(rowKey)) return '';
+    const errorText = String(row.error);
+    const lines = errorText.split('\n').map(l => l.trim()).filter(l => l);
+    const errorHtml = lines.map(l => `<div class="mb-1">${escapeHtml(l)}</div>`).join('');
     return `
         <tr class="check-diff-error-detail-row">
             <td colspan="6">
                 <div class="check-diff-error-detail">
                     <div class="check-diff-error-title">Chi tiết lỗi</div>
-                    <div>${escapeHtml(row.error)}</div>
+                    <div class="text-danger fw-bold">${errorHtml}</div>
                 </div>
             </td>
         </tr>
@@ -1322,6 +1365,11 @@ function renderCheckDiffRows() {
         if (row.error) {
             tr.className += ' check-diff-error-row';
             tr.setAttribute('data-check-error-key', rowKey);
+        }
+        if (row.redmine_hours !== null && row.web_hours !== null && row.redmine_hours > row.web_hours) {
+            tr.classList.add('check-diff-redmine-greater-row');
+        } else if (row.redmine_hours !== null && row.web_hours !== null && row.web_hours > row.redmine_hours) {
+            tr.classList.add('check-diff-web-greater-row');
         }
         const expandIcon = row.status === 'done' && !row.error
             ? `<i class="bi ${_collapsedCheckDiffEntries.has(rowKey) ? 'bi-chevron-right' : 'bi-chevron-down'} check-diff-expand-icon"></i>`
@@ -1678,6 +1726,7 @@ async function handleCheckDiffEntryAction(btn) {
 }
 
 async function handleCheckDiff() {
+    if (_checkDiffInProgress || _syncInProgress) return;
     const apiKey = document.getElementById('api-key').value;
     if (!apiKey) {
         showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
@@ -1704,15 +1753,24 @@ async function handleCheckDiff() {
         const results = await runCheckDiffRange(checkData, apiKey);
         checkDiffRows = results;
         checkDiffRows.forEach(row => {
-            _collapsedCheckDiffEntries.add(makeDiffKey(row.issue_id, row.spent_on));
+            const key = makeDiffKey(row.issue_id, row.spent_on);
+            if (row.redmine_hours !== null && row.web_hours !== null && row.redmine_hours > row.web_hours) {
+                _collapsedCheckDiffEntries.delete(key);
+            } else {
+                _collapsedCheckDiffEntries.add(key);
+            }
         });
-        renderCheckDiffRows();
-        renderInlineDiffIndicators();
         showToast('Hoàn tất', `Đã check ${results.length} dòng.`, 'success');
     } catch (error) {
         showToast('Lỗi', error.message, 'danger');
+        checkDiffRows.forEach(row => {
+            row.status = 'error';
+            row.error = error.message;
+        });
     } finally {
         _checkDiffInProgress = false;
+        renderCheckDiffRows();
+        renderInlineDiffIndicators();
         updateSyncActionButtons();
     }
 }
@@ -2046,6 +2104,7 @@ function _diffDotClass(row) {
 /** Determine the cell CSS class suffix for td tinting */
 function _diffCellClass(row) {
     if (row.error || row.sync_error) return 'diff-cell-error';
+    if (row.redmine_hours !== null && row.web_hours !== null && row.redmine_hours > row.web_hours) return 'diff-cell-redmine-greater';
     if (row.resolution === 'same') return 'diff-cell-same';
     if (row.resolution === 'update_web') return 'diff-cell-update-web';
     if (row.resolution === 'accept_redmine') return 'diff-cell-accept-redmine';
@@ -2055,6 +2114,7 @@ function _diffCellClass(row) {
 /** Short label for the badge */
 function _diffBadgeLabel(row) {
     if (row.error || row.sync_error) return '⚠ Lỗi';
+    if (row.redmine_hours !== null && row.web_hours !== null && row.redmine_hours > row.web_hours) return '⚠ Cần chỉnh sửa';
     if (row.resolution === 'same') return '✓ OK';
     if (row.resolution === 'update_web') return '↑ Web';
     if (row.resolution === 'accept_redmine') return '↓ RM';
@@ -2069,7 +2129,8 @@ function _diffTipText(row) {
     const rmH = row.redmine_hours != null ? Number(row.redmine_hours).toFixed(2) : '—';
     const d = row.delta != null ? (row.delta > 0 ? '+' : '') + Number(row.delta).toFixed(2) : '—';
     let label = '';
-    if (row.resolution === 'same') label = ' ✓';
+    if (row.redmine_hours !== null && row.web_hours !== null && row.redmine_hours > row.web_hours) label = ' ⚠ Cần chỉnh sửa thủ công';
+    else if (row.resolution === 'same') label = ' ✓';
     else if (row.resolution === 'update_web') label = ' → Web';
     else if (row.resolution === 'accept_redmine') label = ' → RM';
     return `Web: ${webH}h | RM: ${rmH}h | Δ ${d}h${label}`;
@@ -2081,7 +2142,7 @@ function _diffTipText(row) {
  */
 function renderInlineDiffIndicators() {
     // Remove all existing td tint classes
-    const DIFF_CELL_CLASSES = ['diff-cell-same','diff-cell-diff','diff-cell-update-web','diff-cell-accept-redmine','diff-cell-error'];
+    const DIFF_CELL_CLASSES = ['diff-cell-same','diff-cell-diff','diff-cell-redmine-greater','diff-cell-update-web','diff-cell-accept-redmine','diff-cell-error'];
     document.querySelectorAll('#matrix-table td').forEach((td) => td.classList.remove(...DIFF_CELL_CLASSES));
 
     if (checkDiffRows.length === 0) return;
