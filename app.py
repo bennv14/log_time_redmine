@@ -197,36 +197,11 @@ def upload_csv():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
-_SSE_MAX_WORKERS = 8
+_SSE_MAX_WORKERS = 10
 
 
 def _format_sse(data: Dict[str, Any]) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
-def _post_one(
-    client: AbstractRedmineTimeClient, entry: Dict[str, Any]
-) -> Tuple[str, Dict[str, Any], TimeEntryResult]:
-    eid = str(entry.get("entry_id", ""))
-    try:
-        issue = entry.get("issue_id")
-        spent = entry.get("spent_on")
-        hours = float(entry.get("hours", 0))
-        act = int(entry.get("activity_id", DEFAULT_ACTIVITY_ID))
-        res = client.post_time_entry(issue, str(spent), hours, act)
-        _log_time_entry_result(entry, res)
-        return eid, entry, res
-    except Exception as e:
-        app.logger.error("entry task failed: %s", e)
-        res = TimeEntryResult(
-            ok=False,
-            error_message=str(e),
-            request_url=None,
-            request_headers=None,
-            request_payload=None,
-        )
-        _log_time_entry_result(entry, res)
-        return eid, entry, res
 
 
 def _build_check_items(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -516,10 +491,18 @@ def check_redmine_diff():
         backend,
         api_key=api_key,
     )
-    output: List[Dict[str, Any]] = []
+    items = _build_check_items(entries)
+    n = len(items)
+    max_workers = min(_SSE_MAX_WORKERS, max(1, n))
+    output: List[Dict[str, Any]] = [None] * n # type: ignore
 
-    for item in _build_check_items(entries):
-        output.append(_check_one(client, item))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        # We use a list to keep order if possible, though not strictly required by API
+        # but it's nicer.
+        future_to_idx = {pool.submit(_check_one, client, item): i for i, item in enumerate(items)}
+        for fut in as_completed(future_to_idx):
+            idx = future_to_idx[fut]
+            output[idx] = fut.result()
 
     return jsonify({"items": output})
 
@@ -568,23 +551,29 @@ def resolve_redmine_check_diff_stream():
             backend,
             api_key=api_key,
         )
+        n = len(items)
+        max_workers = min(_SSE_MAX_WORKERS, max(1, n))
         success = 0
         failed = 0
         skipped = 0
-        for item in items:
-            result = _resolve_check_diff_one(client, item)
-            if result.get("ok"):
-                if result.get("action") == "same":
-                    skipped += 1
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_map = {pool.submit(_resolve_check_diff_one, client, item): item for item in items}
+            for fut in as_completed(future_map):
+                result = fut.result()
+                if result.get("ok"):
+                    if result.get("action") == "same":
+                        skipped += 1
+                    else:
+                        success += 1
                 else:
-                    success += 1
-            else:
-                failed += 1
-            yield _format_sse(result)
+                    failed += 1
+                yield _format_sse(result)
+
         yield _format_sse(
             {
                 "type": "done",
-                "total": len(items),
+                "total": n,
                 "success": success,
                 "failed": failed,
                 "skipped": skipped,
@@ -651,68 +640,6 @@ def check_redmine_diff_stream():
         },
     )
 
-
-@app.route("/api/sync/stream", methods=["POST"])
-def sync_redmine_stream():
-    data = request.get_json(silent=True) or {}
-    api_key = data.get("apiKey")
-    entries: List[Dict[str, Any]] = data.get("entries", [])
-
-    backend = app.config["REDMINE_CLIENT"]
-    if backend_requires_api_key(backend) and not api_key:
-        return jsonify({"error": "Vui lòng nhập khóa API"}), 400
-    if not entries:
-        return jsonify({"error": "Không có bản ghi cần đồng bộ"}), 400
-    for e in entries:
-        if not e.get("entry_id"):
-            return jsonify({"error": "Mỗi entry cần có entry_id (định danh ổn định từ client)"}), 400
-
-    def generate():
-        client: AbstractRedmineTimeClient = create_redmine_time_client(
-            backend,
-            api_key=api_key,
-        )
-        n = len(entries)
-        max_workers = min(_SSE_MAX_WORKERS, max(1, n))
-        success = 0
-        failed = 0
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            future_map = {pool.submit(_post_one, client, e): e for e in entries}
-            for fut in as_completed(future_map):
-                eid, orig, res = fut.result()
-                if res.ok:
-                    success += 1
-                else:
-                    failed += 1
-                yield _format_sse(
-                    {
-                        "type": "result",
-                        "entry_id": eid,
-                        "issue_id": orig.get("issue_id"),
-                        "spent_on": orig.get("spent_on"),
-                        "hours": orig.get("hours"),
-                        "ok": res.ok,
-                        "status_code": res.status_code,
-                        "error": res.error_message,
-                    }
-                )
-        yield _format_sse(
-            {
-                "type": "done",
-                "total": n,
-                "success": success,
-                "failed": failed,
-            }
-        )
-
-    return Response(
-        stream_with_context(generate()),
-        mimetype="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Redmine time entry UI")

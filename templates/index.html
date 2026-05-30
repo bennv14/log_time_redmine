@@ -52,7 +52,7 @@
                 <div class="workflow-step-badge">3</div>
                 <div class="workflow-step-body">
                     <div class="workflow-step-title">Đồng bộ Redmine</div>
-                    <div class="workflow-step-desc">Nhập API key và gửi các bản ghi giờ làm việc</div>
+                    <div class="workflow-step-desc">Kiểm tra chênh lệch hoặc đồng bộ tự động</div>
                 </div>
             </div>
         </div>
@@ -95,16 +95,9 @@
                             <div class="flex-grow-1">
                                 <h6 class="control-card-title mb-0">Bước 3: Đồng bộ Redmine</h6>
                                 <p class="control-card-desc mb-0">
-                                    Sẽ gửi: <span id="sync-entries-count" class="fw-semibold">0</span> bản ghi
-                                    <span id="sync-compact-badge" class="ms-2" hidden></span>
+                                    Kiểm tra chênh lệch hoặc đồng bộ tự động giờ làm việc.
                                 </p>
                             </div>
-                            <button type="button" class="btn btn-outline-danger btn-sm" id="btn-retry-failed" disabled>
-                                <i class="bi bi-arrow-clockwise me-1"></i>Gửi lại bản lỗi
-                            </button>
-                            <button type="button" class="btn btn-outline-primary btn-sm" id="btn-open-request-history">
-                                <i class="bi bi-clock-history me-1"></i>Xem request đã gửi
-                            </button>
                         </div>
 
                         <form id="sync-form" class="d-flex flex-wrap align-items-center gap-2">
@@ -121,8 +114,8 @@
                             <button type="button" class="btn btn-outline-primary btn-sm text-nowrap" id="btn-check-diff">
                                 <i class="bi bi-search me-1"></i>Check
                             </button>
-                            <button type="submit" class="btn btn-purple btn-sm text-nowrap" id="btn-sync" disabled>
-                                <i class="bi bi-arrow-repeat me-1"></i>Đồng bộ
+                            <button type="submit" class="btn btn-purple btn-sm text-nowrap" id="btn-sync">
+                                <i class="bi bi-repeat me-1"></i>Đồng bộ
                             </button>
                         </form>
                     </div>
@@ -307,89 +300,12 @@
         </div>
     </div>
 
-    <div id="sync-overlay" class="sync-overlay" aria-hidden="true">
-        <div class="sync-overlay-content" role="dialog" aria-modal="true" aria-labelledby="sync-overlay-text">
-            <div class="sync-overlay-main">
-                <div id="sync-overlay-spinner" class="spinner-border text-primary" role="status" aria-hidden="true"></div>
-                <div id="sync-overlay-text" class="sync-overlay-text">Đang đồng bộ dữ liệu...</div>
-            </div>
-            <div id="sync-overlay-results" class="sync-overlay-results" hidden>
-                <div class="sync-overlay-results-title">Kết quả đồng bộ Redmine</div>
-                <div class="sync-overlay-results-table-wrap">
-                    <table class="table table-sm mb-0 align-middle sync-overlay-results-table">
-                        <thead>
-                            <tr>
-                                <th>Issue</th>
-                                <th>Ngày</th>
-                                <th class="text-end">Giờ</th>
-                                <th>Trạng thái</th>
-                                <th>Chi tiết</th>
-                            </tr>
-                        </thead>
-                        <tbody id="sync-overlay-results-tbody"></tbody>
-                    </table>
-                </div>
-            </div>
-            <div class="sync-overlay-actions" id="sync-overlay-actions" hidden>
-                <button type="button" class="btn btn-sm btn-outline-danger" id="btn-sync-overlay-retry-failed" disabled>
-                    <i class="bi bi-arrow-clockwise me-1"></i>Đồng bộ lại bản lỗi
-                </button>
-                <button type="button" class="btn btn-sm btn-primary sync-overlay-close-btn" id="btn-sync-overlay-close">
-                    Đóng
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <div id="request-history-overlay" class="sync-overlay" aria-hidden="true">
-        <div class="sync-overlay-content request-history-overlay-content" role="dialog" aria-modal="true" aria-labelledby="request-history-overlay-title">
-            <div class="d-flex justify-content-between align-items-center">
-                <div>
-                    <div id="request-history-overlay-title" class="sync-overlay-text">Lịch sử request đã gửi</div>
-                    <div class="small text-muted">Chỉ hiển thị trong session hiện tại</div>
-                </div>
-                <span class="badge text-bg-light" id="request-history-count">0</span>
-            </div>
-            <div class="sync-overlay-results">
-                <div class="sync-overlay-results-title">Danh sách request</div>
-                <div class="sync-overlay-results-table-wrap">
-                    <table class="table table-sm mb-0 align-middle request-history-table">
-                        <thead>
-                            <tr>
-                                <th style="width:2rem"></th>
-                                <th>Issue</th>
-                                <th>Ngày</th>
-                                <th class="text-end">Giờ</th>
-                                <th>Trạng thái</th>
-                                <th>Lần gửi gần nhất</th>
-                                <th>Lượt gửi</th>
-                            </tr>
-                        </thead>
-                        <tbody id="request-history-body">
-                            <tr id="request-history-empty-row">
-                                <td colspan="7" class="text-center text-muted py-4">Chưa có request nào được gửi.</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            <div class="sync-overlay-actions">
-                <button type="button" class="btn btn-sm btn-outline-danger" id="btn-request-history-retry-failed" disabled>
-                    <i class="bi bi-arrow-clockwise me-1"></i>Đồng bộ lại bản lỗi
-                </button>
-                <button type="button" class="btn btn-sm btn-primary sync-overlay-close-btn" id="btn-request-history-close">
-                    Đóng
-                </button>
-            </div>
-        </div>
-    </div>
-
     <div id="check-diff-overlay" class="sync-overlay" aria-hidden="true">
         <div class="sync-overlay-content request-history-overlay-content" role="dialog" aria-modal="true" aria-labelledby="check-diff-overlay-title">
             <div class="d-flex justify-content-between align-items-center">
                 <div>
-                    <div id="check-diff-overlay-title" class="sync-overlay-text">Kết quả check chênh lệch</div>
-                    <div class="small text-muted">So sánh giờ theo Issue + Ngày</div>
+                    <div id="check-diff-overlay-title" class="sync-overlay-text">Kiểm tra & Đồng bộ Redmine</div>
+                    <div class="small text-muted">Hệ thống đang so sánh và tự động cập nhật giờ làm việc</div>
                 </div>
                 <span class="badge text-bg-light" id="check-diff-count">0</span>
             </div>

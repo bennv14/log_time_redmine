@@ -26,11 +26,6 @@ let _undoDeleteTimer = null;
 
 const DEFAULT_ACTIVITY_ID = parseInt(document.body.dataset.defaultActivityId || "9", 10) || 9;
 
-/** @type {Array<{entry_id: string, issue_id: string, spent_on: string, hours: number, activity_id: number, taskName: string, status: string, error: string|null, httpStatus: number|null}>} */
-let syncResultRows = [];
-/** @type {Array<{entry_id: string, issue_id: string, spent_on: string, hours: number, status: string, detail: string, requested_at: string}>} */
-let requestHistoryRows = [];
-let _syncInProgress = false;
 let _dragCounter = 0;
 /** @type {Array<{issue_id: string, spent_on: string, web_hours: number, redmine_hours: number|null, delta: number|null, is_same: boolean, error?: string, resolution: 'same'|'update_web'|'accept_redmine'|'unresolved'}>} */
 let checkDiffRows = [];
@@ -83,200 +78,10 @@ function buildPendingCheckDiffRows(entries) {
     return Array.from(grouped.values());
 }
 
-function getSyncStats(rows = syncResultRows) {
-    let pending = 0;
-    let ok = 0;
-    let error = 0;
-    rows.forEach((row) => {
-        if (row.status === 'pending') pending += 1;
-        else if (row.status === 'ok') ok += 1;
-        else if (row.status === 'error') error += 1;
-    });
-    return { total: rows.length, pending, ok, error };
-}
-
-function updateSyncResultsSummary() {
-    const badge = document.getElementById('sync-compact-badge');
-    if (!badge) return;
-    if (syncResultRows.length === 0) {
-        badge.hidden = true;
-        badge.innerHTML = '';
-        badge.className = '';
-        return;
-    }
-    const stats = getSyncStats();
-    const done = stats.pending === 0;
-    const ok = stats.error === 0 && stats.total > 0;
-    badge.hidden = !done;
-    if (!done) return;
-    badge.className = `badge ${ok ? 'text-bg-success' : 'text-bg-warning'}`;
-    badge.innerHTML = ok
-        ? `${getStatusIconSvg('ok')} ${stats.ok}/${stats.total}`
-        : `${getStatusIconSvg('warn')} ${stats.ok}/${stats.total} (có lỗi)`;
-}
-
-function getStatusIconSvg(type) {
-    if (type === 'ok') {
-        return '<svg class="status-inline-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13.485 1.929a.75.75 0 0 1 .086 1.057l-7.2 8.5a.75.75 0 0 1-1.098.04L2.4 8.654a.75.75 0 1 1 1.06-1.06l2.295 2.295 6.673-7.873a.75.75 0 0 1 1.057-.087Z" fill="currentColor"/></svg>';
-    }
-    return '<svg class="status-inline-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M7.25 4a.75.75 0 0 1 1.5 0v4a.75.75 0 0 1-1.5 0V4Zm.75 8.5a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm.67-11.69 5.86 10.25A1.5 1.5 0 0 1 13.23 13H2.77a1.5 1.5 0 0 1-1.3-2.19L7.33.81a1.5 1.5 0 0 1 2.34 0Z" fill="currentColor"/></svg>';
-}
-
-function addRequestHistoryRows(entries) {
-    const requestedAt = new Date().toLocaleString('vi-VN');
-    entries.forEach((entry) => {
-        requestHistoryRows.push({
-            entry_id: entry.entry_id,
-            issue_id: entry.issue_id,
-            spent_on: entry.spent_on,
-            hours: entry.hours,
-            status: 'pending',
-            detail: 'Đang gửi...',
-            requested_at: requestedAt
-        });
-    });
-    renderRequestHistory();
-}
-
-function updateRequestHistoryRow(entryId, status, detail) {
-    for (let i = requestHistoryRows.length - 1; i >= 0; i--) {
-        const row = requestHistoryRows[i];
-        if (row.entry_id === entryId && row.status === 'pending') {
-            row.status = status;
-            row.detail = detail || (status === 'ok' ? 'Thành công' : 'Có lỗi');
-            break;
-        }
-    }
-    renderRequestHistory();
-}
-
-/** Set of keys "issue_id__spent_on" currently expanded in request history overlay */
-let _expandedHistoryGroups = new Set();
-
-/**
- * Groups requestHistoryRows by (issue_id, spent_on).
- * Returns array of { key, issue_id, spent_on, rows (newest-first), latestRow, count }.
- */
-function groupRequestHistoryByIssueDate() {
-    const map = new Map();
-    requestHistoryRows.forEach((row) => {
-        const key = `${String(row.issue_id || '').trim()}__${String(row.spent_on || '').trim()}`;
-        if (!map.has(key)) {
-            map.set(key, {
-                key,
-                issue_id: row.issue_id,
-                spent_on: row.spent_on,
-                rows: []
-            });
-        }
-        map.get(key).rows.push(row);
-    });
-    // For each group: set latest row & sort rows newest-first
-    const groups = [];
-    map.forEach((group) => {
-        group.latestRow = group.rows[group.rows.length - 1];
-        group.count = group.rows.length;
-        group.rows = group.rows.slice().reverse();
-        groups.push(group);
-    });
-    // Sort groups so the group with the most-recent request is first
-    groups.sort((a, b) => {
-        const idxA = requestHistoryRows.lastIndexOf(a.latestRow);
-        const idxB = requestHistoryRows.lastIndexOf(b.latestRow);
-        return idxB - idxA;
-    });
-    return groups;
-}
-
-function renderRequestHistory() {
-    const tbody = document.getElementById('request-history-body');
-    const countEl = document.getElementById('request-history-count');
-    if (!tbody || !countEl) return;
-    countEl.textContent = String(requestHistoryRows.length);
-    if (requestHistoryRows.length === 0) {
-        tbody.innerHTML = '<tr id="request-history-empty-row"><td colspan="7" class="text-center text-muted py-4">Chưa có request nào được gửi.</td></tr>';
-        return;
-    }
-
-    tbody.innerHTML = '';
-    const groups = groupRequestHistoryByIssueDate();
-
-    groups.forEach((group) => {
-        const isExpanded = _expandedHistoryGroups.has(group.key);
-        const latest = group.latestRow;
-
-        // Status badge for the latest request
-        let statusHtml = '';
-        if (latest.status === 'pending') {
-            statusHtml = '<span class="badge text-bg-secondary"><span class="spinner-border spinner-border-sm me-1" style="width:0.65rem;height:0.65rem;"></span>Đang gửi</span>';
-        } else if (latest.status === 'ok') {
-            statusHtml = '<span class="badge text-bg-success">Thành công</span>';
-        } else {
-            statusHtml = '<span class="badge text-bg-danger">Thất bại</span>';
-        }
-
-        // Group (parent) row
-        const tr = document.createElement('tr');
-        tr.className = 'rh-group-row' + (isExpanded ? ' rh-expanded' : '');
-        tr.dataset.rhKey = group.key;
-        tr.innerHTML = `
-            <td class="rh-chevron-cell"><i class="bi bi-chevron-right rh-chevron${isExpanded ? ' rh-chevron-open' : ''}"></i></td>
-            <td class="text-nowrap fw-semibold">${escapeHtml(String(group.issue_id))}</td>
-            <td class="text-nowrap">${escapeHtml(group.spent_on)}</td>
-            <td class="text-end">${Number(latest.hours).toFixed(2)}</td>
-            <td>${statusHtml}</td>
-            <td class="text-nowrap small">${escapeHtml(latest.requested_at)}</td>
-            <td><span class="rh-count-badge">${group.count} lần</span></td>
-        `;
-        tr.addEventListener('click', () => {
-            if (_expandedHistoryGroups.has(group.key)) {
-                _expandedHistoryGroups.delete(group.key);
-            } else {
-                _expandedHistoryGroups.add(group.key);
-            }
-            renderRequestHistory();
-        });
-        tbody.appendChild(tr);
-
-        // Expanded sub-rows
-        if (isExpanded) {
-            group.rows.forEach((subRow, idx) => {
-                let subStatusHtml = '';
-                if (subRow.status === 'pending') {
-                    subStatusHtml = '<span class="badge text-bg-secondary"><span class="spinner-border spinner-border-sm me-1" style="width:0.65rem;height:0.65rem;"></span>Đang gửi</span>';
-                } else if (subRow.status === 'ok') {
-                    subStatusHtml = '<span class="badge text-bg-success">Thành công</span>';
-                } else {
-                    subStatusHtml = '<span class="badge text-bg-danger">Thất bại</span>';
-                }
-                const subTr = document.createElement('tr');
-                subTr.className = 'rh-sub-row';
-                const subDetailText = subRow.detail || '—';
-                const subLines = subDetailText.split('\n').map(l => l.trim()).filter(l => l);
-                const subDetailHtml = subLines.length > 1
-                    ? subLines.map(l => `<div class="text-danger fw-semibold">${escapeHtml(l)}</div>`).join('')
-                    : (subRow.status === 'error' ? `<span class="text-danger fw-semibold">${escapeHtml(subDetailText)}</span>` : escapeHtml(subDetailText));
-
-                subTr.innerHTML = `
-                    <td></td>
-                    <td class="text-muted small" colspan="2"><span class="rh-sub-index">#${group.count - idx}</span> ${escapeHtml(subRow.requested_at)}</td>
-                    <td class="text-end">${Number(subRow.hours).toFixed(2)}</td>
-                    <td>${subStatusHtml}</td>
-                    <td class="small text-break" colspan="2" style="max-width: 18rem;">${subDetailHtml}</td>
-                `;
-                tbody.appendChild(subTr);
-            });
-        }
-    });
-}
-
 function updateSummaryMetrics() {
-    const entriesEl = document.getElementById('sync-entries-count');
     const missingEl = document.getElementById('summary-missing-issue');
-    if (!entriesEl || !missingEl) return;
-    const syncEntries = collectSyncEntries();
+    if (!missingEl) return;
     const missingIssueCount = appState.tasks.filter((task) => !String(task.taskId || '').trim()).length;
-    entriesEl.innerText = String(syncEntries.length);
     missingEl.innerText = String(missingIssueCount);
 }
 
@@ -286,63 +91,6 @@ function clearCheckDiffState() {
     renderInlineDiffIndicators();
     hideDiffPopover();
     updateSyncActionButtons();
-}
-
-function setSyncOverlayVisible(isVisible) {
-    const overlay = document.getElementById('sync-overlay');
-    if (!overlay) return;
-    overlay.classList.toggle('show', isVisible);
-    overlay.setAttribute('aria-hidden', isVisible ? 'false' : 'true');
-    if (!isVisible) {
-        setSyncOverlayPhase('loading');
-    }
-}
-
-function setRequestHistoryOverlayVisible(isVisible) {
-    const overlay = document.getElementById('request-history-overlay');
-    if (!overlay) return;
-    overlay.classList.toggle('show', isVisible);
-    overlay.setAttribute('aria-hidden', isVisible ? 'false' : 'true');
-}
-
-/**
- * @param {'loading' | 'done'} phase
- * @param {{ hasError?: boolean }} [opts]
- */
-function setSyncOverlayPhase(phase, opts) {
-    const spinner = document.getElementById('sync-overlay-spinner');
-    const textEl = document.getElementById('sync-overlay-text');
-    const btnClose = document.getElementById('btn-sync-overlay-close');
-    const actions = document.getElementById('sync-overlay-actions');
-    const btnRetry = document.getElementById('btn-sync-overlay-retry-failed');
-    if (!textEl) return;
-    if (phase === 'loading') {
-        if (spinner) {
-            spinner.hidden = false;
-        }
-        textEl.textContent = 'Đang đồng bộ dữ liệu...';
-        if (btnClose) {
-            btnClose.disabled = true;
-        }
-        if (actions) actions.hidden = true;
-        if (btnRetry) btnRetry.disabled = true;
-        return;
-    }
-    if (spinner) {
-        spinner.hidden = true;
-    }
-    const stats = getSyncStats();
-    const summary = `Thành công ${stats.ok}/${stats.total}`;
-    textEl.textContent = opts && opts.hasError
-        ? `${summary}. Có lỗi.`
-        : `${summary}. Hoàn tất.`;
-    if (btnClose) {
-        btnClose.disabled = false;
-    }
-    if (actions) actions.hidden = false;
-    if (btnRetry) {
-        btnRetry.disabled = stats.error === 0 || _syncInProgress;
-    }
 }
 
 function generateEntryId() {
@@ -361,7 +109,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const apiKeyInput = document.getElementById('api-key');
     const btnToggleApiKey = document.getElementById('btn-toggle-api-key');
     const btnClearApiKey = document.getElementById('btn-clear-api-key');
-    const btnOpenRequestHistory = document.getElementById('btn-open-request-history');
     const btnCheckDiff = document.getElementById('btn-check-diff');
     const btnResolveCheckDiff = document.getElementById('btn-check-diff-resolve');
 
@@ -375,57 +122,28 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     initCsvDragAndDrop();
-    syncForm.addEventListener('submit', handleSync);
-    const btnRetryFailed = document.getElementById('btn-retry-failed');
-    if (btnRetryFailed) {
-        btnRetryFailed.addEventListener('click', handleRetryFailed);
+    
+    // Luồng Check & Sync mới
+    if (syncForm) {
+        syncForm.addEventListener('submit', (e) => {
+            handleSync(e);
+        });
     }
+
     if (btnAddTask) {
         btnAddTask.addEventListener('click', handleAddTask);
     }
     if (undoBtn) {
         undoBtn.addEventListener('click', handleUndoDeleteTask);
     }
-    const btnSyncOverlayClose = document.getElementById('btn-sync-overlay-close');
-    if (btnSyncOverlayClose) {
-        btnSyncOverlayClose.addEventListener('click', () => {
-            setSyncOverlayVisible(false);
-        });
-    }
-    const btnOverlayRetry = document.getElementById('btn-sync-overlay-retry-failed');
-    if (btnOverlayRetry) {
-        btnOverlayRetry.addEventListener('click', handleRetryFailed);
-    }
-    const btnRequestHistoryRetry = document.getElementById('btn-request-history-retry-failed');
-    if (btnRequestHistoryRetry) {
-        btnRequestHistoryRetry.addEventListener('click', handleRetryFailed);
-    }
-    const btnRequestHistoryClose = document.getElementById('btn-request-history-close');
-    if (btnRequestHistoryClose) {
-        btnRequestHistoryClose.addEventListener('click', () => {
-            setRequestHistoryOverlayVisible(false);
-        });
-    }
-    if (btnOpenRequestHistory) {
-        btnOpenRequestHistory.addEventListener('click', () => {
-            renderRequestHistory();
-            setRequestHistoryOverlayVisible(true);
-        });
-    }
+
     if (btnCheckDiff) {
         btnCheckDiff.addEventListener('click', handleCheckDiff);
     }
     if (btnResolveCheckDiff) {
         btnResolveCheckDiff.addEventListener('click', handleResolveCheckDiff);
     }
-    const requestHistoryOverlay = document.getElementById('request-history-overlay');
-    if (requestHistoryOverlay) {
-        requestHistoryOverlay.addEventListener('click', (event) => {
-            if (event.target === requestHistoryOverlay) {
-                setRequestHistoryOverlayVisible(false);
-            }
-        });
-    }
+
     const checkDiffOverlay = document.getElementById('check-diff-overlay');
     if (checkDiffOverlay) {
         checkDiffOverlay.addEventListener('click', (event) => {
@@ -440,13 +158,6 @@ document.addEventListener('DOMContentLoaded', () => {
             setCheckDiffOverlayVisible(false);
         });
     }
-    document.addEventListener('keydown', (event) => {
-        if (event.key !== 'Escape') return;
-        const historyOverlay = document.getElementById('request-history-overlay');
-        if (historyOverlay && historyOverlay.classList.contains('show')) {
-            setRequestHistoryOverlayVisible(false);
-        }
-    });
 
     if (btnToggleApiKey && apiKeyInput) {
         btnToggleApiKey.addEventListener('click', () => {
@@ -470,8 +181,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // Render initial app state
     renderApp();
     updateSyncActionButtons();
-    updateSyncResultsSummary();
-    renderRequestHistory();
 
     // Add task confirm modal
     document.getElementById('btn-confirm-add-task').addEventListener('click', () => {
@@ -963,92 +672,28 @@ function getCheckDiffEntriesForResolve(collected) {
 }
 
 function updateSyncActionButtons() {
-    const btnSync = document.getElementById('btn-sync');
     const btnCheckDiff = document.getElementById('btn-check-diff');
-    const btnRetry = document.getElementById('btn-retry-failed');
-    const btnOverlayRetry = document.getElementById('btn-sync-overlay-retry-failed');
-    const btnRequestHistoryRetry = document.getElementById('btn-request-history-retry-failed');
-    if (!btnSync) return;
-    const hasTasks = appState.tasks.length > 0;
-    const hasFailed = syncResultRows.some(r => r.status === 'error');
-    if (btnRetry) {
-        btnRetry.disabled = !hasFailed || _syncInProgress;
-    }
-    if (btnOverlayRetry) {
-        btnOverlayRetry.disabled = !hasFailed || _syncInProgress;
-    }
-    if (btnRequestHistoryRetry) {
-        btnRequestHistoryRetry.disabled = !hasFailed || _syncInProgress;
-    }
+    const btnSync = document.getElementById('btn-sync');
+    
     if (btnCheckDiff) {
-        btnCheckDiff.disabled = _syncInProgress || _checkDiffInProgress || _checkDiffResolveInProgress || !hasTasks || collectSyncEntries().length === 0;
+        btnCheckDiff.disabled = _checkDiffInProgress || _checkDiffResolveInProgress;
     }
+
+    if (btnSync) {
+        btnSync.disabled = _checkDiffInProgress || _checkDiffResolveInProgress;
+    }
+
     const btnResolveCheckDiff = document.getElementById('btn-check-diff-resolve');
     if (btnResolveCheckDiff) {
         const hasDiffToSync = checkDiffRows.some((row) => {
             if (row.status === 'pending' || row.error || row.resolution === 'same') return false;
             return row.delta != null && Number(row.delta || 0) > 1e-9;
         });
-        btnResolveCheckDiff.disabled = _syncInProgress || _checkDiffInProgress || _checkDiffResolveInProgress || !hasDiffToSync;
+        btnResolveCheckDiff.disabled = _checkDiffInProgress || _checkDiffResolveInProgress || !hasDiffToSync;
         btnResolveCheckDiff.innerHTML = _checkDiffResolveInProgress
             ? '<span class="spinner-border spinner-border-sm me-1" style="width:0.65rem;height:0.65rem;"></span>Đang đồng bộ...'
             : '<i class="bi bi-cloud-arrow-up me-1"></i>Đồng bộ Redmine theo Web';
     }
-    if (!hasTasks) {
-        btnSync.disabled = true;
-    } else {
-        btnSync.disabled = _syncInProgress || _checkDiffResolveInProgress || getSyncEntriesForSubmit(collectSyncEntries()).length === 0;
-    }
-    updateWorkflowSteps();
-}
-
-function renderSyncResults() {
-    const overlayResults = document.getElementById('sync-overlay-results');
-    const overlayTbody = document.getElementById('sync-overlay-results-tbody');
-    if (syncResultRows.length === 0) {
-        if (overlayResults) {
-            overlayResults.hidden = true;
-        }
-        updateSyncResultsSummary();
-        return;
-    }
-    if (overlayTbody) {
-        overlayTbody.innerHTML = '';
-    }
-    if (overlayResults) {
-        overlayResults.hidden = false;
-    }
-    syncResultRows.forEach(row => {
-        const overlayTr = document.createElement('tr');
-        let statusHtml = '';
-        if (row.status === 'pending') {
-            statusHtml = '<span class="badge text-bg-secondary"><span class="spinner-border spinner-border-sm me-1" style="width:0.65rem;height:0.65rem;"></span>Đang gửi</span>';
-        } else if (row.status === 'ok') {
-            statusHtml = '<span class="badge text-bg-success">Thành công</span>';
-        } else {
-            statusHtml = '<span class="badge text-bg-danger">Thất bại</span>';
-        }
-        const errorText = row.error ? String(row.error) : '';
-        const lines = errorText.split('\n').map(l => l.trim()).filter(l => l);
-        const detailHtml = lines.length > 0
-            ? (row.httpStatus != null ? `<div class="text-muted mb-1">[${row.httpStatus}]</div>` : '') + 
-              lines.map(l => `<div class="text-danger fw-semibold" style="font-size: 0.8rem;">${escapeHtml(l)}</div>`).join('')
-            : (row.status === 'ok' ? '—' : '');
-
-        overlayTr.innerHTML = `
-            <td class="text-nowrap">${escapeHtml(String(row.issue_id))}</td>
-            <td class="text-nowrap">${escapeHtml(row.spent_on)}</td>
-            <td class="text-end">${Number(row.hours).toFixed(2)}</td>
-            <td>${statusHtml}</td>
-            <td class="small text-break" style="max-width: 18rem;">${detailHtml || '—'}</td>
-        `;
-        if (overlayTbody) {
-            overlayTbody.appendChild(overlayTr);
-        }
-    });
-    updateSyncResultsSummary();
-    updateSyncOverlayProgress();
-    updateSyncActionButtons();
     updateWorkflowSteps();
 }
 
@@ -1063,116 +708,6 @@ function escapeAttr(s) {
         .replace(/&/g, '&amp;')
         .replace(/"/g, '&quot;')
         .replace(/</g, '&lt;');
-}
-
-/**
- * @param {ReturnType<typeof toApiEntries>} apiEntries
- */
-async function runSseStream(apiEntries, apiKey) {
-    const response = await fetch('/api/sync/stream', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'text/event-stream'
-        },
-        body: JSON.stringify({ apiKey, entries: apiEntries })
-    });
-
-    if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.error || `HTTP ${response.status}`);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const blocks = buffer.split('\n\n');
-        buffer = blocks.pop() || '';
-        for (const block of blocks) {
-            for (const line of block.split('\n')) {
-                if (line.startsWith('data: ')) {
-                    const payload = JSON.parse(line.slice(6));
-                    if (payload.type === 'result') {
-                        const row = syncResultRows.find(x => x.entry_id === payload.entry_id);
-                        if (row) {
-                            row.status = payload.ok ? 'ok' : 'error';
-                            row.error = payload.error || null;
-                            row.httpStatus = payload.status_code != null ? payload.status_code : null;
-                        }
-                        const detail = payload.ok
-                            ? 'Thành công'
-                            : (payload.status_code != null ? `[${payload.status_code}] ` : '') + (payload.error || 'Có lỗi');
-                        updateRequestHistoryRow(payload.entry_id, payload.ok ? 'ok' : 'error', detail);
-                        renderSyncResults();
-                    } else if (payload.type === 'done') {
-                        const ok = (payload.failed || 0) === 0;
-                        if (ok) {
-                            showToast('Hoàn tất', `Đã xử lý ${payload.total} bản ghi.`, 'success');
-                        } else {
-                            showToast('Hoàn tất (có lỗi)', `Thành công: ${payload.success}, thất bại: ${payload.failed}.`, 'warning');
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-async function handleSync(e) {
-    e.preventDefault();
-    const apiKey = document.getElementById('api-key').value;
-    if (!apiKey) {
-        showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
-        return;
-    }
-
-    const collected = collectSyncEntries();
-    const filtered = getSyncEntriesForSubmit(collected);
-    const missingIssueCount = appState.tasks.filter((task) => !String(task.taskId || '').trim()).length;
-    if (missingIssueCount > 0) {
-        showToast('Lưu ý', `${missingIssueCount} task thiếu Issue ID sẽ bị bỏ qua khi đồng bộ.`, 'warning');
-    }
-    if (filtered.length === 0) {
-        showToast('Thông báo', 'Không có dữ liệu giờ làm việc để đồng bộ.', 'info');
-        return;
-    }
-    const skippedCount = collected.length - filtered.length;
-    if (skippedCount > 0) {
-        showToast('Thông báo', `Đã bỏ qua ${skippedCount} bản ghi (giống nhau/chấp nhận Redmine/chưa xử lý).`, 'info');
-    }
-
-    syncResultRows = filtered.map(r => ({
-        ...r,
-        status: 'pending',
-        error: null,
-        httpStatus: null
-    }));
-    addRequestHistoryRows(filtered);
-    renderSyncResults();
-
-    setSyncOverlayPhase('loading');
-    _syncInProgress = true;
-    setSyncOverlayVisible(true);
-    updateSyncOverlayProgress();
-    updateSyncActionButtons();
-
-    let syncOverlayError = null;
-    try {
-        await runSseStream(toApiEntries(filtered), apiKey);
-    } catch (error) {
-        syncOverlayError = error;
-        showToast('Lỗi', error.message, 'danger');
-    } finally {
-        _syncInProgress = false;
-        setSyncOverlayPhase('done', { hasError: !!syncOverlayError });
-        updateSyncActionButtons();
-        updateWorkflowSteps();
-    }
 }
 
 function setCheckDiffOverlayVisible(isVisible) {
@@ -1726,7 +1261,7 @@ async function handleCheckDiffEntryAction(btn) {
 }
 
 async function handleCheckDiff() {
-    if (_checkDiffInProgress || _syncInProgress) return;
+    if (_checkDiffInProgress || _checkDiffResolveInProgress) return;
     const apiKey = document.getElementById('api-key').value;
     if (!apiKey) {
         showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
@@ -1760,7 +1295,7 @@ async function handleCheckDiff() {
                 _collapsedCheckDiffEntries.add(key);
             }
         });
-        showToast('Hoàn tất', `Đã check ${results.length} dòng.`, 'success');
+        showToast('Hoàn tất', `Đã kiểm tra xong ${results.length} dòng.`, 'success');
     } catch (error) {
         showToast('Lỗi', error.message, 'danger');
         checkDiffRows.forEach(row => {
@@ -1769,6 +1304,69 @@ async function handleCheckDiff() {
         });
     } finally {
         _checkDiffInProgress = false;
+        renderCheckDiffRows();
+        renderInlineDiffIndicators();
+        updateSyncActionButtons();
+    }
+}
+
+async function handleSync(e) {
+    if (e) e.preventDefault();
+    if (_checkDiffInProgress || _checkDiffResolveInProgress) return;
+    const apiKey = document.getElementById('api-key').value;
+    if (!apiKey) {
+        showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
+        return;
+    }
+    const checkData = collectCheckData();
+    if (!checkData.fromDate || !checkData.toDate) {
+        showToast('Thông báo', 'Không có ngày để đồng bộ.', 'info');
+        return;
+    }
+    const collected = collectSyncEntries();
+    _expandedCheckDiffErrors = new Set();
+    checkDiffRows = buildPendingCheckDiffRows(collected);
+    _collapsedCheckDiffEntries = new Set(
+        checkDiffRows.map((row) => makeDiffKey(row.issue_id, row.spent_on))
+    );
+    _checkDiffInProgress = true;
+    renderCheckDiffRows();
+    renderInlineDiffIndicators();
+    setCheckDiffOverlayVisible(true);
+    updateSyncActionButtons();
+
+    try {
+        // Bước 1: Check
+        const results = await runCheckDiffRange(checkData, apiKey);
+        checkDiffRows = results;
+        checkDiffRows.forEach(row => {
+            const key = makeDiffKey(row.issue_id, row.spent_on);
+            if (row.redmine_hours !== null && row.web_hours !== null && row.redmine_hours > row.web_hours) {
+                _collapsedCheckDiffEntries.delete(key);
+            } else {
+                _collapsedCheckDiffEntries.add(key);
+            }
+        });
+        
+        // Bước 2: Tự động đồng bộ các dòng có chênh lệch (Web > Redmine)
+        const filtered = getCheckDiffEntriesForResolve(collected);
+        if (filtered.length > 0) {
+            _checkDiffResolveInProgress = true;
+            _checkDiffInProgress = false; // Chuyển trạng thái từ check sang resolve
+            updateSyncActionButtons();
+            await runResolveCheckDiffStream(filtered, apiKey);
+        } else {
+            showToast('Hoàn tất', `Dữ liệu đã khớp, không cần đồng bộ.`, 'success');
+        }
+    } catch (error) {
+        showToast('Lỗi', error.message, 'danger');
+        checkDiffRows.forEach(row => {
+            row.status = 'error';
+            row.error = error.message;
+        });
+    } finally {
+        _checkDiffInProgress = false;
+        _checkDiffResolveInProgress = false;
         renderCheckDiffRows();
         renderInlineDiffIndicators();
         updateSyncActionButtons();
@@ -1796,48 +1394,6 @@ async function handleResolveCheckDiff() {
     } finally {
         _checkDiffResolveInProgress = false;
         updateSyncActionButtons();
-    }
-}
-
-async function handleRetryFailed() {
-    const apiKey = document.getElementById('api-key').value;
-    if (!apiKey) {
-        showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
-        return;
-    }
-    const failed = syncResultRows.filter(r => r.status === 'error');
-    if (failed.length === 0) {
-        showToast('Thông báo', 'Không có bản ghi thất bại.', 'info');
-        return;
-    }
-
-    failed.forEach(r => {
-        r.status = 'pending';
-        r.error = null;
-        r.httpStatus = null;
-    });
-    addRequestHistoryRows(failed);
-    renderSyncResults();
-
-    const btnRetry = document.getElementById('btn-retry-failed');
-    setSyncOverlayPhase('loading');
-    _syncInProgress = true;
-    setSyncOverlayVisible(true);
-    updateSyncOverlayProgress();
-    updateSyncActionButtons();
-    if (btnRetry) btnRetry.disabled = true;
-
-    let syncOverlayError = null;
-    try {
-        await runSseStream(toApiEntries(failed), apiKey);
-    } catch (error) {
-        syncOverlayError = error;
-        showToast('Lỗi', error.message, 'danger');
-    } finally {
-        _syncInProgress = false;
-        setSyncOverlayPhase('done', { hasError: !!syncOverlayError });
-        updateSyncActionButtons();
-        updateWorkflowSteps();
     }
 }
 
@@ -1945,15 +1501,6 @@ function focusGridInputByPosition(row, col) {
     nextInput.select();
 }
 
-function updateSyncOverlayProgress() {
-    const textEl = document.getElementById('sync-overlay-text');
-    if (!textEl) return;
-    if (!_syncInProgress || syncResultRows.length === 0) return;
-    const stats = getSyncStats();
-    const completed = stats.ok + stats.error;
-    textEl.textContent = `Đang đồng bộ dữ liệu... (${completed}/${stats.total})`;
-}
-
 function updateCurrentMonthLabel() {
     const el = document.getElementById('current-month-label');
     if (!el) return;
@@ -1979,10 +1526,10 @@ function updateWorkflowSteps() {
     if (!s1 || !s2 || !s3) return;
     const hasTasks = appState.tasks.length > 0;
     s1.classList.toggle('is-active', !hasTasks);
-    s2.classList.toggle('is-active', hasTasks && !_syncInProgress);
-    s3.classList.toggle('is-active', _syncInProgress);
+    s2.classList.toggle('is-active', hasTasks && !_checkDiffInProgress && !_checkDiffResolveInProgress);
+    s3.classList.toggle('is-active', _checkDiffInProgress || _checkDiffResolveInProgress);
     s1.classList.toggle('is-done', hasTasks);
-    s2.classList.toggle('is-done', syncResultRows.length > 0);
+    s2.classList.toggle('is-done', checkDiffRows.length > 0);
 }
 
 function handleEditTask(taskIndex) {

@@ -409,6 +409,7 @@ class TestCheckDiffApi(unittest.TestCase):
         flask_app.config["REDMINE_CLIENT"] = "jprep"
         self.client = flask_app.test_client()
 
+    @patch("app._SSE_MAX_WORKERS", 1)
     @patch("app.create_redmine_time_client")
     def test_check_diff_same_and_diff(self, mock_factory: MagicMock) -> None:
         mock_client = MagicMock()
@@ -436,6 +437,7 @@ class TestCheckDiffApi(unittest.TestCase):
         self.assertFalse(data["items"][1]["is_same"])
         self.assertEqual(data["items"][1]["delta"], 2.0)
 
+    @patch("app._SSE_MAX_WORKERS", 1)
     @patch("app.create_redmine_time_client")
     def test_resolve_check_diff_creates_missing_and_delta_and_blocks_greater(
         self, mock_factory: MagicMock
