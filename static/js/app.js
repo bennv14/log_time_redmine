@@ -367,7 +367,11 @@ async function uploadCsvFile(file) {
 
 function initCsvDragAndDrop() {
     const body = document.body;
+    const dropZone = document.getElementById('csv-drop-zone');
+
     if (!body) return;
+
+    // Prevent default drag behaviors on the whole page
     const dragEvents = ['dragenter', 'dragover', 'dragleave', 'drop'];
     dragEvents.forEach((eventName) => {
         body.addEventListener(eventName, (event) => {
@@ -376,6 +380,7 @@ function initCsvDragAndDrop() {
         });
     });
 
+    // Global drag indicator for body
     body.addEventListener('dragenter', (event) => {
         const hasFiles = event.dataTransfer && Array.from(event.dataTransfer.types || []).includes('Files');
         if (!hasFiles) return;
@@ -415,6 +420,59 @@ function initCsvDragAndDrop() {
         setCsvFileNameDisplay(file.name);
         await uploadCsvFile(file);
     });
+
+    // Drop zone interactions
+    if (dropZone) {
+        const fileInput = document.getElementById('csv-file');
+
+        dropZone.addEventListener('click', () => {
+            if (fileInput) fileInput.click();
+        });
+        dropZone.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                if (fileInput) fileInput.click();
+            }
+        });
+
+        dropZone.addEventListener('dragenter', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            dropZone.classList.add('csv-drop-zone-active');
+        });
+
+        dropZone.addEventListener('dragover', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            dropZone.classList.add('csv-drop-zone-active');
+        });
+
+        dropZone.addEventListener('dragleave', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            dropZone.classList.remove('csv-drop-zone-active');
+        });
+
+        dropZone.addEventListener('drop', async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            dropZone.classList.remove('csv-drop-zone-active');
+
+            const files = event.dataTransfer ? event.dataTransfer.files : null;
+            if (!files || files.length === 0) return;
+            if (files.length > 1) {
+                showToast('Lỗi', 'Chỉ hỗ trợ import 1 tệp CSV mỗi lần.', 'warning');
+                return;
+            }
+            const file = files[0];
+            if (!isCsvFile(file)) {
+                showToast('Lỗi', 'Chỉ chấp nhận tệp CSV.', 'warning');
+                return;
+            }
+            setCsvFileNameDisplay(file.name);
+            await uploadCsvFile(file);
+        });
+    }
 }
 
 function updateTotals() {

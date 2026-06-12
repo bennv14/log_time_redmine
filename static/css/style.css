@@ -117,6 +117,77 @@ body.dragover-csv {
 }
 
 /* ============================================================
+CSV Drop Zone (drag & drop)
+============================================================ */
+.csv-drop-zone {
+  border: 2px dashed var(--gray-300);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  text-align: center;
+  transition: all var(--transition-base);
+  background: var(--gray-50);
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+}
+
+.csv-drop-zone::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--primary-soft);
+  opacity: 0;
+  transition: opacity var(--transition-base);
+  pointer-events: none;
+}
+
+.csv-drop-zone:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.csv-drop-zone:hover::before {
+  opacity: 0.3;
+}
+
+.csv-drop-zone-active,
+.csv-drop-zone-active:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  box-shadow: var(--shadow-md), var(--glow-primary);
+}
+
+.csv-drop-zone-active::before {
+  opacity: 0.5;
+}
+
+.csv-drop-zone-icon {
+  font-size: 2rem;
+  color: var(--gray-400);
+  margin-bottom: 0.5rem;
+  transition: color var(--transition-base), transform var(--transition-bounce);
+}
+
+.csv-drop-zone:hover .csv-drop-zone-icon,
+.csv-drop-zone-active .csv-drop-zone-icon {
+  color: var(--primary);
+  transform: scale(1.1);
+}
+
+.csv-drop-zone-text {
+  font-size: var(--font-sm);
+  color: var(--gray-500);
+  margin: 0;
+  line-height: 1.4;
+  position: relative;
+  z-index: 1;
+}
+
+.csv-drop-zone-text strong {
+  color: var(--gray-700);
+}
+
+/* ============================================================
 Navbar
 ============================================================ */
 .app-navbar {
