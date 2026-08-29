@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import List, Union
+import random
+import time
+from typing import List, Optional, Union
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from redmine_time_client.base import (
     AbstractRedmineTimeClient,
@@ -24,9 +27,7 @@ DEFAULT_TIME_ENTRIES_PATH = DEFAULT_JPREP_TIME_ENTRIES_PATH
 
 class HttpRedmineTimeClient(AbstractRedmineTimeClient):
     """
-    Redmine REST client using requests.
-    One instance per API key; safe to use from multiple threads if each call uses requests.post
-    (no shared Session by default).
+    Redmine REST client using requests.Session with connection pooling and throttling jitter.
     """
 
     def __init__(
@@ -35,12 +36,44 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
         base_url: str = DEFAULT_REDMINE_BASE_URL,
         time_entries_path: str = DEFAULT_TIME_ENTRIES_PATH,
         timeout: int = 15,
+        pool_connections: int = 10,
+        pool_maxsize: int = 10,
+        jitter_ms: float = 50.0,
+        session: Optional[requests.Session] = None,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._api_key = api_key
         self._path = time_entries_path if time_entries_path.startswith("/") else f"/{time_entries_path}"
         self._timeout = timeout
         self._url = f"{self._base}{self._path}"
+        self._jitter_ms = jitter_ms
+
+        if session is not None:
+            self._session = session
+        else:
+            self._session = requests.Session()
+            adapter = HTTPAdapter(
+                pool_connections=pool_connections,
+                pool_maxsize=pool_maxsize,
+                max_retries=0,
+            )
+            self._session.mount("http://", adapter)
+            self._session.mount("https://", adapter)
+
+    def _throttle(self) -> None:
+        if self._jitter_ms > 0:
+            delay = random.uniform(self._jitter_ms * 0.8, self._jitter_ms * 1.2) / 1000.0
+            time.sleep(delay)
+
+    def close(self) -> None:
+        """Close the underlying requests Session."""
+        self._session.close()
+
+    def __enter__(self) -> HttpRedmineTimeClient:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
 
     def _entry_url(self, entry_id: Union[int, str]) -> str:
         path_without_json = self._path[:-5] if self._path.endswith(".json") else self._path
@@ -80,7 +113,8 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
             "X-Redmine-API-Key": self._api_key,
         }
         try:
-            response = requests.post(
+            self._throttle()
+            response = self._session.post(
                 self._url,
                 json=payload,
                 headers=headers,
@@ -136,7 +170,8 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
             }
             if user_id is not None:
                 params["user_id"] = user_id
-            response = requests.get(
+            self._throttle()
+            response = self._session.get(
                 self._url,
                 params=params,
                 headers=headers,
@@ -195,7 +230,8 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
             }
             if user_id is not None:
                 params["user_id"] = user_id
-            response = requests.get(
+            self._throttle()
+            response = self._session.get(
                 self._url,
                 params=params,
                 headers=headers,
@@ -247,7 +283,8 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
             }
             if user_id is not None:
                 params["user_id"] = user_id
-            response = requests.get(
+            self._throttle()
+            response = self._session.get(
                 self._url,
                 params=params,
                 headers=headers,
@@ -291,7 +328,8 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
         }
         try:
             url = self._entry_url(entry_id)
-            response = requests.put(
+            self._throttle()
+            response = self._session.put(
                 url,
                 json=payload,
                 headers=headers,
@@ -331,7 +369,8 @@ class HttpRedmineTimeClient(AbstractRedmineTimeClient):
         headers = {"X-Redmine-API-Key": self._api_key}
         url = self._entry_url(entry_id)
         try:
-            response = requests.delete(
+            self._throttle()
+            response = self._session.delete(
                 url,
                 headers=headers,
                 timeout=self._timeout,

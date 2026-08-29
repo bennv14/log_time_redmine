@@ -2,6 +2,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import requests
+from requests.adapters import HTTPAdapter
+
 from app import app as flask_app
 from redmine_time_client.base import RedmineTimeEntry, TimeEntryResult
 from redmine_time_client.factory import (
@@ -25,9 +28,39 @@ class TestHttpRedmineTimeClient(unittest.TestCase):
         self.client = HttpRedmineTimeClient(
             api_key="secret",
             time_entries_path="/redmine/time_entries.json",
+            jitter_ms=0,
         )
 
-    @patch("redmine_time_client.http.requests.post")
+    def test_session_adapter_configuration(self) -> None:
+        client = HttpRedmineTimeClient(api_key="secret")
+        adapter = client._session.adapters.get("https://")
+        self.assertIsInstance(adapter, HTTPAdapter)
+        self.assertEqual(adapter._pool_connections, 10)
+        self.assertEqual(adapter._pool_maxsize, 10)
+        self.assertEqual(adapter.max_retries.total, 0)
+        client.close()
+
+    @patch("redmine_time_client.http.time.sleep")
+    @patch.object(requests.Session, "post")
+    def test_post_time_entry_throttles_jitter(
+        self, mock_post: MagicMock, mock_sleep: MagicMock
+    ) -> None:
+        mock_response = MagicMock(status_code=201, text='{"time_entry":{"id":1}}')
+        mock_post.return_value = mock_response
+        client = HttpRedmineTimeClient(api_key="secret", jitter_ms=50.0)
+        client.post_time_entry(42, "2025-04-01", 1.0, 9)
+        mock_sleep.assert_called_once()
+        delay = mock_sleep.call_args[0][0]
+        self.assertGreaterEqual(delay, 0.04)
+        self.assertLessEqual(delay, 0.06)
+
+    def test_context_manager_closes_session(self) -> None:
+        with HttpRedmineTimeClient(api_key="secret") as client:
+            session = client._session
+        # Session close does not destroy object but adapter pools are cleared
+        self.assertIsNotNone(session)
+
+    @patch.object(requests.Session, "post")
     def test_post_time_entry_success_201(self, mock_post: MagicMock) -> None:
         mock_response = MagicMock()
         mock_response.status_code = 201
@@ -57,7 +90,7 @@ class TestHttpRedmineTimeClient(unittest.TestCase):
             f"{DEFAULT_REDMINE_BASE_URL}{DEFAULT_JPREP_TIME_ENTRIES_PATH}",
         )
 
-    @patch("redmine_time_client.http.requests.post")
+    @patch.object(requests.Session, "post")
     def test_post_time_entry_uses_planio_config(self, mock_post: MagicMock) -> None:
         mock_response = MagicMock()
         mock_response.status_code = 201
@@ -67,6 +100,7 @@ class TestHttpRedmineTimeClient(unittest.TestCase):
             api_key="secret",
             base_url=DEFAULT_PLANIO_BASE_URL,
             time_entries_path=DEFAULT_PLANIO_TIME_ENTRIES_PATH,
+            jitter_ms=0,
         )
 
         r = client.post_time_entry(42, "2025-04-01", 2.5, 9)
@@ -77,7 +111,7 @@ class TestHttpRedmineTimeClient(unittest.TestCase):
             f"{DEFAULT_PLANIO_BASE_URL}{DEFAULT_PLANIO_TIME_ENTRIES_PATH}",
         )
 
-    @patch("redmine_time_client.http.requests.put")
+    @patch.object(requests.Session, "put")
     def test_update_time_entry_uses_individual_url(self, mock_put: MagicMock) -> None:
         mock_response = MagicMock()
         mock_response.status_code = 204
@@ -94,7 +128,7 @@ class TestHttpRedmineTimeClient(unittest.TestCase):
         )
         self.assertEqual(mock_put.call_args[1]["json"], {"time_entry": {"hours": 2.0}})
 
-    @patch("redmine_time_client.http.requests.delete")
+    @patch.object(requests.Session, "delete")
     def test_delete_time_entry_uses_individual_url(self, mock_delete: MagicMock) -> None:
         mock_response = MagicMock()
         mock_response.status_code = 204
@@ -110,7 +144,7 @@ class TestHttpRedmineTimeClient(unittest.TestCase):
             f"{DEFAULT_REDMINE_BASE_URL}/redmine/time_entries/123.json",
         )
 
-    @patch("redmine_time_client.http.requests.post")
+    @patch.object(requests.Session, "post")
     def test_post_time_entry_error_422(self, mock_post: MagicMock) -> None:
         mock_response = MagicMock()
         mock_response.status_code = 422
@@ -123,7 +157,7 @@ class TestHttpRedmineTimeClient(unittest.TestCase):
         self.assertEqual(r.status_code, 422)
         self.assertIn("invalid", r.error_message or "")
 
-    @patch("redmine_time_client.http.requests.post")
+    @patch.object(requests.Session, "post")
     def test_post_time_entry_request_exception(self, mock_post: MagicMock) -> None:
         mock_post.side_effect = ConnectionError("network down")
 
@@ -132,7 +166,7 @@ class TestHttpRedmineTimeClient(unittest.TestCase):
         self.assertFalse(r.ok)
         self.assertIn("network", (r.error_message or "").lower())
 
-    @patch("redmine_time_client.http.requests.get")
+    @patch.object(requests.Session, "get")
     def test_list_time_entries_filters_and_paginates(self, mock_get: MagicMock) -> None:
         p1 = MagicMock()
         p1.json.return_value = {
@@ -182,7 +216,7 @@ class TestHttpRedmineTimeClient(unittest.TestCase):
         self.assertEqual(rows[1].id, 12)
         self.assertEqual(mock_get.call_count, 2)
 
-    @patch("redmine_time_client.http.requests.get")
+    @patch.object(requests.Session, "get")
     def test_list_user_time_entries_in_range_no_issue_filter(self, mock_get: MagicMock) -> None:
         mock_response = MagicMock()
         mock_response.json.return_value = {
