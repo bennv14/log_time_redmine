@@ -271,6 +271,9 @@ def _build_check_items(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "spent_on": spent_on,
                 "web_hours": 0.0,
                 "activity_id": int(raw.get("activity_id", DEFAULT_ACTIVITY_ID)),
+                "redmine_hours": raw.get("redmine_hours"),
+                "delta": raw.get("delta"),
+                "redmine_entries": raw.get("redmine_entries"),
             }
             grouped[key] = item
         item["web_hours"] += float(raw.get("hours", 0) or 0)
@@ -382,21 +385,39 @@ def _resolve_check_diff_one(
     web_hours = round(float(item["web_hours"]), 4)
     activity_id = int(item.get("activity_id", DEFAULT_ACTIVITY_ID))
     try:
-        before = _check_one(client, item)
-        if before.get("error"):
-            return {
-                "type": "result",
+        # Nếu item đã có sẵn redmine_hours và delta từ bước check trước đó, tái sử dụng để tránh gọi GET thừa
+        has_precheck = item.get("redmine_hours") is not None and item.get("delta") is not None
+        if has_precheck:
+            redmine_hours = round(float(item["redmine_hours"] or 0), 4)
+            delta = round(float(item["delta"] or 0), 4)
+            before_entries = item.get("redmine_entries") or []
+            before = {
                 "issue_id": issue_id,
                 "spent_on": spent_on,
                 "web_hours": web_hours,
-                "ok": False,
-                "action": "error",
-                "error": before["error"],
-                "check": before,
+                "redmine_hours": redmine_hours,
+                "delta": delta,
+                "is_same": abs(delta) < 1e-9,
+                "count_redmine_entries": len(before_entries),
+                "redmine_entries": before_entries,
             }
+        else:
+            before = _check_one(client, item)
+            if before.get("error"):
+                return {
+                    "type": "result",
+                    "issue_id": issue_id,
+                    "spent_on": spent_on,
+                    "web_hours": web_hours,
+                    "ok": False,
+                    "action": "error",
+                    "error": before["error"],
+                    "check": before,
+                }
+            redmine_hours = float(before.get("redmine_hours") or 0)
+            delta = round(web_hours - redmine_hours, 4)
+            before_entries = before.get("redmine_entries") or []
 
-        redmine_hours = float(before.get("redmine_hours") or 0)
-        delta = round(web_hours - redmine_hours, 4)
         if abs(delta) < 1e-9:
             return {
                 "type": "result",
@@ -423,6 +444,7 @@ def _resolve_check_diff_one(
                 "check": before,
             }
 
+        # Gửi 1 POST duy nhất lên Redmine
         res = client.post_time_entry(issue_id, spent_on, delta, activity_id)
         _log_time_entry_result(
             {
@@ -447,13 +469,45 @@ def _resolve_check_diff_one(
                 "check": before,
             }
 
-        after = _check_one(client, item)
+        # Tối ưu: Không gọi GET check lại sau khi POST thành công.
+        # Tạo object check mới từ kết quả POST response.
+        created_entry_id = None
+        if res.response_text:
+            try:
+                resp_data = json.loads(res.response_text)
+                if isinstance(resp_data, dict) and "time_entry" in resp_data:
+                    created_entry_id = resp_data["time_entry"].get("id")
+            except Exception:
+                pass
+
+        new_redmine_hours = round(redmine_hours + delta, 4)
+        new_delta = round(web_hours - new_redmine_hours, 4)
+        new_entry = {
+            "id": created_entry_id,
+            "issue_id": int(issue_id) if str(issue_id).isdigit() else issue_id,
+            "spent_on": spent_on,
+            "hours": delta,
+            "created_on": datetime.now().isoformat(),
+            "comments": "",
+        }
+        updated_entries = list(before_entries) + [new_entry]
+        after = {
+            "issue_id": issue_id,
+            "spent_on": spent_on,
+            "web_hours": web_hours,
+            "redmine_hours": new_redmine_hours,
+            "delta": new_delta,
+            "is_same": abs(new_delta) < 1e-9,
+            "count_redmine_entries": len(updated_entries),
+            "redmine_entries": updated_entries,
+        }
+
         return {
             "type": "result",
             "issue_id": issue_id,
             "spent_on": spent_on,
             "web_hours": web_hours,
-            "ok": not bool(after.get("error")),
+            "ok": True,
             "action": "created_missing" if redmine_hours == 0 else "created_delta",
             "created_hours": delta,
             "message": f"Đã tạo thêm {delta:.2f}h trên Redmine.",

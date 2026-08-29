@@ -445,17 +445,12 @@ class TestCheckDiffApi(unittest.TestCase):
         mock_client = MagicMock()
         mock_client.list_time_entries.side_effect = [
             [],
-            [RedmineTimeEntry(100, 1, "2025-04-01", 2.0, "now")],
             [RedmineTimeEntry(200, 2, "2025-04-02", 1.0, "now")],
-            [
-                RedmineTimeEntry(200, 2, "2025-04-02", 1.0, "now"),
-                RedmineTimeEntry(201, 2, "2025-04-02", 2.0, "now"),
-            ],
             [RedmineTimeEntry(300, 3, "2025-04-03", 5.0, "now")],
         ]
         mock_client.post_time_entry.side_effect = [
-            TimeEntryResult(ok=True, status_code=201, response_text="{}"),
-            TimeEntryResult(ok=True, status_code=201, response_text="{}"),
+            TimeEntryResult(ok=True, status_code=201, response_text='{"time_entry": {"id": 100}}'),
+            TimeEntryResult(ok=True, status_code=201, response_text='{"time_entry": {"id": 201}}'),
         ]
         mock_factory.return_value = mock_client
 
@@ -481,6 +476,42 @@ class TestCheckDiffApi(unittest.TestCase):
         self.assertEqual(mock_client.post_time_entry.call_count, 2)
         self.assertEqual(mock_client.post_time_entry.call_args_list[0].args[:3], ("1", "2025-04-01", 2.0))
         self.assertEqual(mock_client.post_time_entry.call_args_list[1].args[:3], ("2", "2025-04-02", 2.0))
+        self.assertEqual(mock_client.list_time_entries.call_count, 3)
+
+    @patch("app._SSE_MAX_WORKERS", 1)
+    @patch("app.create_redmine_time_client")
+    def test_resolve_check_diff_with_precheck_makes_no_get_calls(
+        self, mock_factory: MagicMock
+    ) -> None:
+        mock_client = MagicMock()
+        mock_client.post_time_entry.return_value = TimeEntryResult(
+            ok=True, status_code=201, response_text='{"time_entry": {"id": 101}}'
+        )
+        mock_factory.return_value = mock_client
+
+        resp = self.client.post(
+            "/api/sync/check/resolve/stream",
+            json={
+                "apiKey": "k",
+                "entries": [
+                    {
+                        "issue_id": "1",
+                        "spent_on": "2025-04-01",
+                        "hours": 3.0,
+                        "redmine_hours": 1.0,
+                        "delta": 2.0,
+                        "redmine_entries": [],
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        text = resp.get_data(as_text=True)
+        self.assertIn('"action": "created_delta"', text)
+        self.assertIn('"created_hours": 2.0', text)
+        self.assertEqual(mock_client.post_time_entry.call_count, 1)
+        self.assertEqual(mock_client.list_time_entries.call_count, 0)
 
     @patch("app.create_redmine_time_client")
     def test_mutate_redmine_time_entry_updates_and_returns_check(

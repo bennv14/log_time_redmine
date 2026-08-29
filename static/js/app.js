@@ -754,7 +754,10 @@ function toApiEntries(rows) {
         issue_id: e.issue_id,
         spent_on: e.spent_on,
         hours: e.hours,
-        activity_id: e.activity_id
+        activity_id: e.activity_id,
+        redmine_hours: e.redmine_hours,
+        delta: e.delta,
+        redmine_entries: e.redmine_entries
     }));
 }
 
@@ -764,9 +767,19 @@ function getCheckDiffEntriesForResolve(collected) {
     checkDiffRows.forEach((row) => {
         if (row.status === 'pending' || row.error || row.resolution === 'same') return;
         if (row.delta == null || Number(row.delta || 0) <= 1e-9) return;
-        diffMap.set(makeDiffKey(row.issue_id, row.spent_on), true);
+        diffMap.set(makeDiffKey(row.issue_id, row.spent_on), row);
     });
-    return collected.filter((entry) => diffMap.has(makeDiffKey(entry.issue_id, entry.spent_on)));
+    return collected
+        .filter((entry) => diffMap.has(makeDiffKey(entry.issue_id, entry.spent_on)))
+        .map((entry) => {
+            const diff = diffMap.get(makeDiffKey(entry.issue_id, entry.spent_on));
+            return {
+                ...entry,
+                redmine_hours: diff ? diff.redmine_hours : undefined,
+                delta: diff ? diff.delta : undefined,
+                redmine_entries: diff ? diff.redmine_entries : undefined
+            };
+        });
 }
 
 function updateSyncActionButtons() {
@@ -2003,8 +2016,11 @@ function showToast(title, message, type = 'primary') {
   const iconClass = icons[type] || icons.primary;
   toastIcon.className = `bi me-2 ${iconClass}`;
 
-  toastTitle.innerText = title;
-  toastMessage.innerText = message;
+  if (typeof message === 'string' && message.includes('<')) {
+    toastMessage.innerHTML = message;
+  } else {
+    toastMessage.innerText = message || '';
+  }
 
   const toast = new bootstrap.Toast(toastEl);
   toast.show();
