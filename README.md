@@ -35,12 +35,36 @@ python app.py
 
 Mở `http://127.0.0.1:5000/`.
 
-### Chế độ mock (không gọi Redmine thật)
+### Chọn Redmine client
+
+Mặc định app chạy với JPrep:
+
+```bash
+REDMINE_CLIENT=jprep flask --app app run --debug --host 0.0.0.0 --port 5000
+python app.py --client jprep
+```
+
+Chạy với Planio:
+
+```bash
+REDMINE_CLIENT=planio flask --app app run --debug --host 0.0.0.0 --port 5000
+python app.py --client planio
+```
+
+Chạy mock, không gọi Redmine thật:
+
+```bash
+REDMINE_CLIENT=mock flask --app app run --debug --host 0.0.0.0 --port 5000
+python app.py --client mock
+python app.py --mock
+```
+
+### Chế độ mock tương thích cũ
 
 - Biến môi trường: `REDMINE_MOCK` = `1`, `true`, hoặc `yes` (không phân biệt hoa thường, bỏ qua khoảng trắng đầu/cuối) → backend `mock`; API key không bắt buộc trên server.
 - Hoặc: `python app.py --mock` (ghi đè config thành mock khi khởi chạy trực tiếp `app.py`).
 
-`MockRedmineTimeClient` luôn trả thành công (HTTP 201, payload JSON giả).
+`REDMINE_MOCK=true` vẫn được hỗ trợ và sẽ ưu tiên hơn `REDMINE_CLIENT`.
 
 **Lưu ý:** Form trên giao diện vẫn yêu cầu nhập API key trước khi bấm đồng bộ; với mock, server không kiểm tra key nhưng client có thể gửi chuỗi bất kỳ.
 
@@ -77,11 +101,11 @@ Mở `http://127.0.0.1:5000/`.
 |------------|---------|
 | `AbstractRedmineTimeClient` | Contract `post_time_entry(issue_id, spent_on, hours, activity_id)` |
 | `TimeEntryResult` | `ok`, `status_code`, `error_message`, `response_text` |
-| `HttpRedmineTimeClient` | `requests.post` JSON tới `{base}{path}`; base mặc định `https://redmine.jprep.jp`, path mặc định `/redmine/time_entries.json`; header `X-Redmine-API-Key` |
-| `MockRedmineTimeClient` | Không HTTP; luôn OK |
-| `parse_redmine_backend_from_env` / `create_redmine_time_client` / `backend_requires_api_key` | Chọn `http` vs `mock` |
+| `HttpRedmineTimeClient` | `requests.post` JSON tới `{base}{path}`; JPrep dùng `https://redmine.jprep.jp/redmine/time_entries.json`; Planio dùng `https://bennv.planio.com/time_entries.json`; header `X-Redmine-API-Key` |
+| `MockRedmineTimeClient` | Không HTTP; có thể trả success hoặc lỗi giả lập tùy cấu hình |
+| `parse_redmine_backend_from_env` / `create_redmine_time_client` / `backend_requires_api_key` | Chọn `mock`, `jprep`, hoặc `planio` |
 
-Đổi server Redmine: sửa hằng trong [`redmine_time_client/http.py`](redmine_time_client/http.py) (`DEFAULT_REDMINE_BASE_URL`, `DEFAULT_TIME_ENTRIES_PATH`) hoặc mở rộng code nếu cần cấu hình động.
+`parse_redmine_backend_from_env` đọc `REDMINE_CLIENT=mock|jprep|planio`; alias cũ `REDMINE_MOCK=true` vẫn chọn mock.
 
 ## API HTTP
 

@@ -117,6 +117,77 @@ body.dragover-csv {
 }
 
 /* ============================================================
+CSV Drop Zone (drag & drop)
+============================================================ */
+.csv-drop-zone {
+  border: 2px dashed var(--gray-300);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  text-align: center;
+  transition: all var(--transition-base);
+  background: var(--gray-50);
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+}
+
+.csv-drop-zone::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--primary-soft);
+  opacity: 0;
+  transition: opacity var(--transition-base);
+  pointer-events: none;
+}
+
+.csv-drop-zone:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.csv-drop-zone:hover::before {
+  opacity: 0.3;
+}
+
+.csv-drop-zone-active,
+.csv-drop-zone-active:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  box-shadow: var(--shadow-md), var(--glow-primary);
+}
+
+.csv-drop-zone-active::before {
+  opacity: 0.5;
+}
+
+.csv-drop-zone-icon {
+  font-size: 2rem;
+  color: var(--gray-400);
+  margin-bottom: 0.5rem;
+  transition: color var(--transition-base), transform var(--transition-bounce);
+}
+
+.csv-drop-zone:hover .csv-drop-zone-icon,
+.csv-drop-zone-active .csv-drop-zone-icon {
+  color: var(--primary);
+  transform: scale(1.1);
+}
+
+.csv-drop-zone-text {
+  font-size: var(--font-sm);
+  color: var(--gray-500);
+  margin: 0;
+  line-height: 1.4;
+  position: relative;
+  z-index: 1;
+}
+
+.csv-drop-zone-text strong {
+  color: var(--gray-700);
+}
+
+/* ============================================================
 Navbar
 ============================================================ */
 .app-navbar {
@@ -670,7 +741,6 @@ Matrix Table
 #matrix-table {
   border-collapse: separate;
   border-spacing: 0;
-  min-width: max-content;
   width: 100%;
 }
 
@@ -787,6 +857,7 @@ Matrix Table
   white-space: normal;
   word-break: break-word;
   border-right: 1px solid var(--gray-200) !important;
+  font-weight: 700;
 }
 
 /* third-col is the LAST sticky column — add a strong right-side drop-shadow
@@ -874,6 +945,20 @@ Table Inputs
   font-weight: 700;
   color: var(--primary);
   background: var(--primary-soft);
+}
+
+#matrix-table input[type="number"].invalid-cell {
+  border-color: var(--danger) !important;
+  background-color: var(--danger-soft) !important;
+  color: var(--danger) !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2) !important;
+  animation: shake 0.4s ease-in-out;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
 }
 
 #matrix-table input[type="number"]::-webkit-outer-spin-button,
@@ -972,25 +1057,43 @@ Table Links & Actions
   box-shadow: var(--shadow-sm), var(--glow-danger);
 }
 
+.btn-icon-xs {
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  color: var(--gray-500);
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+.btn-icon-xs:hover {
+  background-color: var(--gray-100);
+  color: var(--gray-800);
+}
+
 /* ============================================================
 Empty State
 ============================================================ */
 .empty-state-td {
   padding: 0 !important;
-  text-align: left !important;
+  text-align: center !important;
   border-bottom: none !important;
 }
 
 .empty-state {
-  position: sticky;
-  left: 50%;
-  transform: translateX(-50%);
-  width: max-content;
-  max-width: 90vw;
+  width: 100%;
+  max-width: 100%;
   text-align: center;
   padding: 4rem 2rem;
   color: var(--gray-500);
-  display: inline-block;
+  box-sizing: border-box;
 }
 
 .empty-state-icon {
@@ -1458,11 +1561,163 @@ Sync/Request History/Check Diff Overlays
 
 .check-diff-table th:nth-child(6),
 .check-diff-table td:nth-child(6) {
-  width: 8rem;
+  width: 10rem;
 }
 
-.check-diff-table td:nth-child(7) {
-  min-width: 16rem;
+.check-diff-main-row {
+  cursor: pointer;
+}
+
+.check-diff-main-row td {
+  border-top: 1px solid rgba(79, 70, 229, 0.18);
+  border-bottom: 1px solid rgba(79, 70, 229, 0.18);
+  color: var(--gray-800);
+  font-weight: 600;
+  transition: box-shadow var(--transition-fast);
+}
+
+.check-diff-main-row td:first-child {
+  border-left: 4px solid var(--primary);
+}
+
+.check-diff-main-row:hover td {
+  box-shadow: inset 0 0 0 9999px rgba(79, 70, 229, 0.04);
+}
+
+.check-diff-expand-icon {
+  margin-right: 0.375rem;
+  color: var(--primary);
+  font-size: 0.75rem;
+}
+
+.check-diff-error-row {
+  cursor: pointer;
+}
+
+.check-diff-error-row td,
+.check-diff-error-row:hover td {
+  background: var(--danger-soft);
+  border-color: rgba(239, 68, 68, 0.24);
+}
+
+.check-diff-error-row td:first-child {
+  border-left-color: var(--danger);
+}
+
+.check-diff-redmine-greater-row td,
+.check-diff-redmine-greater-row:hover td {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.check-diff-redmine-greater-row td:first-child {
+  border-left-color: var(--danger);
+}
+
+.check-diff-web-greater-row td:first-child {
+  border-left-color: var(--warning);
+}
+
+.check-diff-entry-detail-row td {
+  padding: 0 0.875rem 0.875rem;
+}
+
+.check-diff-detail-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin-left: 1rem;
+  padding-left: 0.875rem;
+  border-left: 3px solid var(--gray-200);
+}
+
+.check-diff-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  color: var(--gray-500);
+  font-size: var(--font-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.check-diff-entry-table {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.check-diff-entry-row {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.8fr) minmax(5rem, 0.5fr) minmax(14rem, 1.8fr) minmax(12rem, 1.4fr) minmax(5.5rem, auto);
+  align-items: center;
+  gap: 1rem;
+  min-width: 0;
+  white-space: nowrap;
+  font-size: var(--font-sm);
+  color: var(--gray-700);
+}
+
+.check-diff-entry-row-head {
+  color: var(--gray-500);
+  font-size: var(--font-xs);
+  font-weight: 700;
+}
+
+.check-diff-entry-id,
+.check-diff-entry-hours {
+  font-weight: 700;
+}
+
+.check-diff-entry-hours {
+  color: var(--success);
+}
+
+.check-diff-entry-meta,
+.check-diff-entry-comment,
+.check-diff-entry-empty {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.check-diff-entry-actions {
+  display: inline-flex;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+
+.check-diff-entry-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+}
+
+.check-diff-error-detail-row td {
+  padding: 0 0.875rem 0.875rem;
+}
+
+.check-diff-error-detail {
+  margin-left: 1rem;
+  padding-left: 0.875rem;
+  border-left: 3px solid var(--danger);
+  color: var(--danger);
+  font-size: var(--font-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.check-diff-error-title {
+  margin-bottom: 0.25rem;
+  font-size: var(--font-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 /* ============================================================
@@ -1585,6 +1840,7 @@ Inline Diff Indicators (badge pill, tooltip, popover)
 /* --- Cell-level tint (applied to <td>) --- */
 #matrix-table td.diff-cell-same    { background-color: rgba(16, 185, 129, 0.15) !important; }
 #matrix-table td.diff-cell-diff    { background-color: rgba(245, 158, 11, 0.20) !important; box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.3) !important; }
+#matrix-table td.diff-cell-redmine-greater { background-color: rgba(239, 68, 68, 0.18) !important; box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.3) !important; }
 #matrix-table td.diff-cell-update-web     { background-color: rgba(79, 70, 229, 0.15) !important; }
 #matrix-table td.diff-cell-accept-redmine { background-color: rgba(124, 58, 237, 0.15) !important; }
 #matrix-table td.diff-cell-error   { background-color: rgba(239, 68, 68, 0.15) !important; }
@@ -1592,6 +1848,7 @@ Inline Diff Indicators (badge pill, tooltip, popover)
 /* Keep tint on hover/focus rows too */
 #matrix-table tbody tr:hover td.diff-cell-diff    { background-color: rgba(245, 158, 11, 0.25) !important; }
 #matrix-table tbody tr:hover td.diff-cell-same    { background-color: rgba(16, 185, 129, 0.2) !important; }
+#matrix-table tbody tr:hover td.diff-cell-redmine-greater { background-color: rgba(239, 68, 68, 0.24) !important; }
 #matrix-table tbody tr:hover td.diff-cell-update-web     { background-color: rgba(79, 70, 229, 0.2) !important; }
 #matrix-table tbody tr:hover td.diff-cell-accept-redmine { background-color: rgba(124, 58, 237, 0.2) !important; }
 #matrix-table tbody tr:hover td.diff-cell-error   { background-color: rgba(239, 68, 68, 0.2) !important; }

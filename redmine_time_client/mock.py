@@ -17,34 +17,46 @@ def _default_success() -> TimeEntryResult:
         ok=True,
         status_code=201,
         response_text='{"time_entry":{"id":0,"mock":true}}',
+        request_url="https://mock.redmine/time_entries.json",
+        request_headers={"X-Redmine-API-Key": "mock-key"},
+        request_payload={"time_entry": {"mock": True}},
     )
 
 
 def _default_error_pool() -> list[TimeEntryResult]:
+    req_info = {
+        "request_url": "https://mock.redmine/time_entries.json",
+        "request_headers": {"X-Redmine-API-Key": "mock-key"},
+        "request_payload": {"time_entry": {"mock": True}},
+    }
     return [
         TimeEntryResult(
             ok=False,
             status_code=422,
             error_message='{"errors":["Activity cannot be blank"]}',
             response_text='{"errors":["Activity cannot be blank"]}',
+            **req_info,
         ),
         TimeEntryResult(
             ok=False,
             status_code=401,
             error_message="HTTP Basic: Access denied.",
             response_text="HTTP Basic: Access denied.",
+            **req_info,
         ),
         TimeEntryResult(
             ok=False,
             status_code=500,
             error_message="Internal Server Error",
             response_text="<html><body>500</body></html>",
+            **req_info,
         ),
         TimeEntryResult(
             ok=False,
             status_code=None,
             error_message="Connection refused (mock)",
             response_text=None,
+            **req_info,
         ),
     ]
 
@@ -102,9 +114,92 @@ class MockRedmineTimeClient(AbstractRedmineTimeClient):
         self,
         issue_id: Union[int, str],
         spent_on: str,
+        user_id: Union[int, str, None] = None,
     ) -> List[RedmineTimeEntry]:
         key = (str(issue_id), spent_on)
         return list(self._entries.get(key, []))
+
+    def list_time_entries_in_range(
+        self,
+        issue_ids: List[Union[int, str]],
+        from_date: str,
+        to_date: str,
+        user_id: Union[int, str, None] = None,
+    ) -> List[RedmineTimeEntry]:
+        issue_ids_set = {str(i) for i in issue_ids}
+        result = []
+        for (entry_issue_id, entry_spent_on), entries in self._entries.items():
+            if entry_issue_id not in issue_ids_set:
+                continue
+            if from_date <= entry_spent_on <= to_date:
+                result.extend(entries)
+        return result
+
+    def list_user_time_entries_in_range(
+        self,
+        from_date: str,
+        to_date: str,
+        user_id: Union[int, str, None] = None,
+    ) -> List[RedmineTimeEntry]:
+        result = []
+        for (entry_issue_id, entry_spent_on), entries in self._entries.items():
+            if from_date <= entry_spent_on <= to_date:
+                result.extend(entries)
+        return result
+
+    def update_time_entry(
+        self,
+        entry_id: Union[int, str],
+        hours: float,
+    ) -> TimeEntryResult:
+        url = f"https://mock.redmine/time_entries/{entry_id}.json"
+        headers = {"X-Redmine-API-Key": "mock-key"}
+        payload = {"time_entry": {"hours": float(hours)}}
+        for entries in self._entries.values():
+            for entry in entries:
+                if str(entry.id) == str(entry_id):
+                    entry.hours = float(hours)
+                    return TimeEntryResult(
+                        ok=True,
+                        status_code=200,
+                        response_text=f'{{"time_entry":{{"id":{entry.id},"mock":true}}}}',
+                        request_url=url,
+                        request_headers=headers,
+                        request_payload=payload,
+                    )
+        return TimeEntryResult(
+            ok=False,
+            status_code=404,
+            error_message="Time entry not found (mock)",
+            response_text="Time entry not found (mock)",
+            request_url=url,
+            request_headers=headers,
+            request_payload=payload,
+        )
+
+    def delete_time_entry(self, entry_id: Union[int, str]) -> TimeEntryResult:
+        url = f"https://mock.redmine/time_entries/{entry_id}.json"
+        headers = {"X-Redmine-API-Key": "mock-key"}
+        for key, entries in self._entries.items():
+            for idx, entry in enumerate(entries):
+                if str(entry.id) == str(entry_id):
+                    del entries[idx]
+                    if not entries:
+                        del self._entries[key]
+                    return TimeEntryResult(
+                        ok=True,
+                        status_code=204,
+                        request_url=url,
+                        request_headers=headers,
+                    )
+        return TimeEntryResult(
+            ok=False,
+            status_code=404,
+            error_message="Time entry not found (mock)",
+            response_text="Time entry not found (mock)",
+            request_url=url,
+            request_headers=headers,
+        )
 
     def _store_entry(self, issue_id: Union[int, str], spent_on: str, hours: float) -> None:
         key = (str(issue_id), spent_on)
@@ -119,4 +214,3 @@ class MockRedmineTimeClient(AbstractRedmineTimeClient):
             )
         )
         self._next_entry_id += 1
-

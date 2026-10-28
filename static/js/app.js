@@ -24,16 +24,16 @@ let _pendingEditIndex = null;
 let _lastDeletedTask = null;
 let _undoDeleteTimer = null;
 
-const DEFAULT_ACTIVITY_ID = 9;
+const DEFAULT_ACTIVITY_ID = parseInt(document.body.dataset.defaultActivityId || "9", 10) || 9;
 
-/** @type {Array<{entry_id: string, issue_id: string, spent_on: string, hours: number, activity_id: number, taskName: string, status: string, error: string|null, httpStatus: number|null}>} */
-let syncResultRows = [];
-/** @type {Array<{entry_id: string, issue_id: string, spent_on: string, hours: number, status: string, detail: string, requested_at: string}>} */
-let requestHistoryRows = [];
-let _syncInProgress = false;
 let _dragCounter = 0;
 /** @type {Array<{issue_id: string, spent_on: string, web_hours: number, redmine_hours: number|null, delta: number|null, is_same: boolean, error?: string, resolution: 'same'|'update_web'|'accept_redmine'|'unresolved'}>} */
 let checkDiffRows = [];
+let _checkDiffInProgress = false;
+let _checkDiffResolveInProgress = false;
+let _expandedCheckDiffErrors = new Set();
+let _collapsedCheckDiffEntries = new Set();
+let _mutatingCheckDiffEntryActions = new Map();
 
 function makeDiffKey(issueId, spentOn) {
     return `${String(issueId || '').trim()}__${String(spentOn || '').trim()}`;
@@ -51,194 +51,37 @@ function getTaskSnapshotsForIssueDate(issueId, spentOn) {
     return snapshots;
 }
 
-function getSyncStats(rows = syncResultRows) {
-    let pending = 0;
-    let ok = 0;
-    let error = 0;
-    rows.forEach((row) => {
-        if (row.status === 'pending') pending += 1;
-        else if (row.status === 'ok') ok += 1;
-        else if (row.status === 'error') error += 1;
-    });
-    return { total: rows.length, pending, ok, error };
-}
-
-function updateSyncResultsSummary() {
-    const badge = document.getElementById('sync-compact-badge');
-    if (!badge) return;
-    if (syncResultRows.length === 0) {
-        badge.hidden = true;
-        badge.innerHTML = '';
-        badge.className = '';
-        return;
-    }
-    const stats = getSyncStats();
-    const done = stats.pending === 0;
-    const ok = stats.error === 0 && stats.total > 0;
-    badge.hidden = !done;
-    if (!done) return;
-    badge.className = `badge ${ok ? 'text-bg-success' : 'text-bg-warning'}`;
-    badge.innerHTML = ok
-        ? `${getStatusIconSvg('ok')} ${stats.ok}/${stats.total}`
-        : `${getStatusIconSvg('warn')} ${stats.ok}/${stats.total} (có lỗi)`;
-}
-
-function getStatusIconSvg(type) {
-    if (type === 'ok') {
-        return '<svg class="status-inline-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13.485 1.929a.75.75 0 0 1 .086 1.057l-7.2 8.5a.75.75 0 0 1-1.098.04L2.4 8.654a.75.75 0 1 1 1.06-1.06l2.295 2.295 6.673-7.873a.75.75 0 0 1 1.057-.087Z" fill="currentColor"/></svg>';
-    }
-    return '<svg class="status-inline-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M7.25 4a.75.75 0 0 1 1.5 0v4a.75.75 0 0 1-1.5 0V4Zm.75 8.5a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm.67-11.69 5.86 10.25A1.5 1.5 0 0 1 13.23 13H2.77a1.5 1.5 0 0 1-1.3-2.19L7.33.81a1.5 1.5 0 0 1 2.34 0Z" fill="currentColor"/></svg>';
-}
-
-function addRequestHistoryRows(entries) {
-    const requestedAt = new Date().toLocaleString('vi-VN');
+function buildPendingCheckDiffRows(entries) {
+    const grouped = new Map();
     entries.forEach((entry) => {
-        requestHistoryRows.push({
-            entry_id: entry.entry_id,
-            issue_id: entry.issue_id,
-            spent_on: entry.spent_on,
-            hours: entry.hours,
+        const issueId = String(entry.issue_id || '').trim();
+        const spentOn = String(entry.spent_on || '').trim();
+        if (!issueId || !spentOn) return;
+        const key = makeDiffKey(issueId, spentOn);
+        const current = grouped.get(key) || {
+            issue_id: issueId,
+            spent_on: spentOn,
+            web_hours: 0,
+            redmine_hours: null,
+            delta: null,
+            is_same: false,
+            redmine_entries: [],
             status: 'pending',
-            detail: 'Đang gửi...',
-            requested_at: requestedAt
-        });
+            original_web_hours: 0,
+            web_task_snapshots: getTaskSnapshotsForIssueDate(issueId, spentOn),
+            resolution: 'unresolved'
+        };
+        current.web_hours += parseFloat(entry.hours || 0) || 0;
+        current.original_web_hours = current.web_hours;
+        grouped.set(key, current);
     });
-    renderRequestHistory();
-}
-
-function updateRequestHistoryRow(entryId, status, detail) {
-    for (let i = requestHistoryRows.length - 1; i >= 0; i--) {
-        const row = requestHistoryRows[i];
-        if (row.entry_id === entryId && row.status === 'pending') {
-            row.status = status;
-            row.detail = detail || (status === 'ok' ? 'Thành công' : 'Có lỗi');
-            break;
-        }
-    }
-    renderRequestHistory();
-}
-
-/** Set of keys "issue_id__spent_on" currently expanded in request history overlay */
-let _expandedHistoryGroups = new Set();
-
-/**
- * Groups requestHistoryRows by (issue_id, spent_on).
- * Returns array of { key, issue_id, spent_on, rows (newest-first), latestRow, count }.
- */
-function groupRequestHistoryByIssueDate() {
-    const map = new Map();
-    requestHistoryRows.forEach((row) => {
-        const key = `${String(row.issue_id || '').trim()}__${String(row.spent_on || '').trim()}`;
-        if (!map.has(key)) {
-            map.set(key, {
-                key,
-                issue_id: row.issue_id,
-                spent_on: row.spent_on,
-                rows: []
-            });
-        }
-        map.get(key).rows.push(row);
-    });
-    // For each group: set latest row & sort rows newest-first
-    const groups = [];
-    map.forEach((group) => {
-        group.latestRow = group.rows[group.rows.length - 1];
-        group.count = group.rows.length;
-        group.rows = group.rows.slice().reverse();
-        groups.push(group);
-    });
-    // Sort groups so the group with the most-recent request is first
-    groups.sort((a, b) => {
-        const idxA = requestHistoryRows.lastIndexOf(a.latestRow);
-        const idxB = requestHistoryRows.lastIndexOf(b.latestRow);
-        return idxB - idxA;
-    });
-    return groups;
-}
-
-function renderRequestHistory() {
-    const tbody = document.getElementById('request-history-body');
-    const countEl = document.getElementById('request-history-count');
-    if (!tbody || !countEl) return;
-    countEl.textContent = String(requestHistoryRows.length);
-    if (requestHistoryRows.length === 0) {
-        tbody.innerHTML = '<tr id="request-history-empty-row"><td colspan="7" class="text-center text-muted py-4">Chưa có request nào được gửi.</td></tr>';
-        return;
-    }
-
-    tbody.innerHTML = '';
-    const groups = groupRequestHistoryByIssueDate();
-
-    groups.forEach((group) => {
-        const isExpanded = _expandedHistoryGroups.has(group.key);
-        const latest = group.latestRow;
-
-        // Status badge for the latest request
-        let statusHtml = '';
-        if (latest.status === 'pending') {
-            statusHtml = '<span class="badge text-bg-secondary"><span class="spinner-border spinner-border-sm me-1" style="width:0.65rem;height:0.65rem;"></span>Đang gửi</span>';
-        } else if (latest.status === 'ok') {
-            statusHtml = '<span class="badge text-bg-success">Thành công</span>';
-        } else {
-            statusHtml = '<span class="badge text-bg-danger">Thất bại</span>';
-        }
-
-        // Group (parent) row
-        const tr = document.createElement('tr');
-        tr.className = 'rh-group-row' + (isExpanded ? ' rh-expanded' : '');
-        tr.dataset.rhKey = group.key;
-        tr.innerHTML = `
-            <td class="rh-chevron-cell"><i class="bi bi-chevron-right rh-chevron${isExpanded ? ' rh-chevron-open' : ''}"></i></td>
-            <td class="text-nowrap fw-semibold">${escapeHtml(String(group.issue_id))}</td>
-            <td class="text-nowrap">${escapeHtml(group.spent_on)}</td>
-            <td class="text-end">${Number(latest.hours).toFixed(2)}</td>
-            <td>${statusHtml}</td>
-            <td class="text-nowrap small">${escapeHtml(latest.requested_at)}</td>
-            <td><span class="rh-count-badge">${group.count} lần</span></td>
-        `;
-        tr.addEventListener('click', () => {
-            if (_expandedHistoryGroups.has(group.key)) {
-                _expandedHistoryGroups.delete(group.key);
-            } else {
-                _expandedHistoryGroups.add(group.key);
-            }
-            renderRequestHistory();
-        });
-        tbody.appendChild(tr);
-
-        // Expanded sub-rows
-        if (isExpanded) {
-            group.rows.forEach((subRow, idx) => {
-                let subStatusHtml = '';
-                if (subRow.status === 'pending') {
-                    subStatusHtml = '<span class="badge text-bg-secondary"><span class="spinner-border spinner-border-sm me-1" style="width:0.65rem;height:0.65rem;"></span>Đang gửi</span>';
-                } else if (subRow.status === 'ok') {
-                    subStatusHtml = '<span class="badge text-bg-success">Thành công</span>';
-                } else {
-                    subStatusHtml = '<span class="badge text-bg-danger">Thất bại</span>';
-                }
-                const subTr = document.createElement('tr');
-                subTr.className = 'rh-sub-row';
-                subTr.innerHTML = `
-                    <td></td>
-                    <td class="text-muted small" colspan="2"><span class="rh-sub-index">#${group.count - idx}</span> ${escapeHtml(subRow.requested_at)}</td>
-                    <td class="text-end">${Number(subRow.hours).toFixed(2)}</td>
-                    <td>${subStatusHtml}</td>
-                    <td class="small text-break" colspan="2" style="max-width: 18rem;">${escapeHtml(subRow.detail || '—')}</td>
-                `;
-                tbody.appendChild(subTr);
-            });
-        }
-    });
+    return Array.from(grouped.values());
 }
 
 function updateSummaryMetrics() {
-    const entriesEl = document.getElementById('sync-entries-count');
     const missingEl = document.getElementById('summary-missing-issue');
-    if (!entriesEl || !missingEl) return;
-    const syncEntries = collectSyncEntries();
+    if (!missingEl) return;
     const missingIssueCount = appState.tasks.filter((task) => !String(task.taskId || '').trim()).length;
-    entriesEl.innerText = String(syncEntries.length);
     missingEl.innerText = String(missingIssueCount);
 }
 
@@ -248,63 +91,6 @@ function clearCheckDiffState() {
     renderInlineDiffIndicators();
     hideDiffPopover();
     updateSyncActionButtons();
-}
-
-function setSyncOverlayVisible(isVisible) {
-    const overlay = document.getElementById('sync-overlay');
-    if (!overlay) return;
-    overlay.classList.toggle('show', isVisible);
-    overlay.setAttribute('aria-hidden', isVisible ? 'false' : 'true');
-    if (!isVisible) {
-        setSyncOverlayPhase('loading');
-    }
-}
-
-function setRequestHistoryOverlayVisible(isVisible) {
-    const overlay = document.getElementById('request-history-overlay');
-    if (!overlay) return;
-    overlay.classList.toggle('show', isVisible);
-    overlay.setAttribute('aria-hidden', isVisible ? 'false' : 'true');
-}
-
-/**
- * @param {'loading' | 'done'} phase
- * @param {{ hasError?: boolean }} [opts]
- */
-function setSyncOverlayPhase(phase, opts) {
-    const spinner = document.getElementById('sync-overlay-spinner');
-    const textEl = document.getElementById('sync-overlay-text');
-    const btnClose = document.getElementById('btn-sync-overlay-close');
-    const actions = document.getElementById('sync-overlay-actions');
-    const btnRetry = document.getElementById('btn-sync-overlay-retry-failed');
-    if (!textEl) return;
-    if (phase === 'loading') {
-        if (spinner) {
-            spinner.hidden = false;
-        }
-        textEl.textContent = 'Đang đồng bộ dữ liệu...';
-        if (btnClose) {
-            btnClose.disabled = true;
-        }
-        if (actions) actions.hidden = true;
-        if (btnRetry) btnRetry.disabled = true;
-        return;
-    }
-    if (spinner) {
-        spinner.hidden = true;
-    }
-    const stats = getSyncStats();
-    const summary = `Thành công ${stats.ok}/${stats.total}`;
-    textEl.textContent = opts && opts.hasError
-        ? `${summary}. Có lỗi.`
-        : `${summary}. Hoàn tất.`;
-    if (btnClose) {
-        btnClose.disabled = false;
-    }
-    if (actions) actions.hidden = false;
-    if (btnRetry) {
-        btnRetry.disabled = stats.error === 0 || _syncInProgress;
-    }
 }
 
 function generateEntryId() {
@@ -323,8 +109,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const apiKeyInput = document.getElementById('api-key');
     const btnToggleApiKey = document.getElementById('btn-toggle-api-key');
     const btnClearApiKey = document.getElementById('btn-clear-api-key');
-    const btnOpenRequestHistory = document.getElementById('btn-open-request-history');
     const btnCheckDiff = document.getElementById('btn-check-diff');
+    const btnResolveCheckDiff = document.getElementById('btn-check-diff-resolve');
 
     btnUpload.addEventListener('click', () => csvFileInput.click());
     document.getElementById('csv-file-name').addEventListener('click', () => csvFileInput.click());
@@ -336,54 +122,28 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     initCsvDragAndDrop();
-    syncForm.addEventListener('submit', handleSync);
-    const btnRetryFailed = document.getElementById('btn-retry-failed');
-    if (btnRetryFailed) {
-        btnRetryFailed.addEventListener('click', handleRetryFailed);
+    
+    // Luồng Check & Sync mới
+    if (syncForm) {
+        syncForm.addEventListener('submit', (e) => {
+            handleSync(e);
+        });
     }
+
     if (btnAddTask) {
         btnAddTask.addEventListener('click', handleAddTask);
     }
     if (undoBtn) {
         undoBtn.addEventListener('click', handleUndoDeleteTask);
     }
-    const btnSyncOverlayClose = document.getElementById('btn-sync-overlay-close');
-    if (btnSyncOverlayClose) {
-        btnSyncOverlayClose.addEventListener('click', () => {
-            setSyncOverlayVisible(false);
-        });
-    }
-    const btnOverlayRetry = document.getElementById('btn-sync-overlay-retry-failed');
-    if (btnOverlayRetry) {
-        btnOverlayRetry.addEventListener('click', handleRetryFailed);
-    }
-    const btnRequestHistoryRetry = document.getElementById('btn-request-history-retry-failed');
-    if (btnRequestHistoryRetry) {
-        btnRequestHistoryRetry.addEventListener('click', handleRetryFailed);
-    }
-    const btnRequestHistoryClose = document.getElementById('btn-request-history-close');
-    if (btnRequestHistoryClose) {
-        btnRequestHistoryClose.addEventListener('click', () => {
-            setRequestHistoryOverlayVisible(false);
-        });
-    }
-    if (btnOpenRequestHistory) {
-        btnOpenRequestHistory.addEventListener('click', () => {
-            renderRequestHistory();
-            setRequestHistoryOverlayVisible(true);
-        });
-    }
+
     if (btnCheckDiff) {
         btnCheckDiff.addEventListener('click', handleCheckDiff);
     }
-    const requestHistoryOverlay = document.getElementById('request-history-overlay');
-    if (requestHistoryOverlay) {
-        requestHistoryOverlay.addEventListener('click', (event) => {
-            if (event.target === requestHistoryOverlay) {
-                setRequestHistoryOverlayVisible(false);
-            }
-        });
+    if (btnResolveCheckDiff) {
+        btnResolveCheckDiff.addEventListener('click', handleResolveCheckDiff);
     }
+
     const checkDiffOverlay = document.getElementById('check-diff-overlay');
     if (checkDiffOverlay) {
         checkDiffOverlay.addEventListener('click', (event) => {
@@ -398,13 +158,6 @@ document.addEventListener('DOMContentLoaded', () => {
             setCheckDiffOverlayVisible(false);
         });
     }
-    document.addEventListener('keydown', (event) => {
-        if (event.key !== 'Escape') return;
-        const historyOverlay = document.getElementById('request-history-overlay');
-        if (historyOverlay && historyOverlay.classList.contains('show')) {
-            setRequestHistoryOverlayVisible(false);
-        }
-    });
 
     if (btnToggleApiKey && apiKeyInput) {
         btnToggleApiKey.addEventListener('click', () => {
@@ -428,8 +181,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // Render initial app state
     renderApp();
     updateSyncActionButtons();
-    updateSyncResultsSummary();
-    renderRequestHistory();
 
     // Add task confirm modal
     document.getElementById('btn-confirm-add-task').addEventListener('click', () => {
@@ -549,6 +300,18 @@ function isCsvFile(file) {
     return file.type === 'text/csv' || file.type === 'application/vnd.ms-excel';
 }
 
+async function readJsonResponse(response) {
+    const text = await response.text();
+    if (!text) {
+        throw new Error(`Server trả response rỗng (HTTP ${response.status})`);
+    }
+    try {
+        return JSON.parse(text);
+    } catch (error) {
+        throw new Error(`Server không trả JSON hợp lệ (HTTP ${response.status})`);
+    }
+}
+
 async function uploadCsvFile(file) {
     if (!file) return;
     if (!isCsvFile(file)) {
@@ -569,11 +332,24 @@ async function uploadCsvFile(file) {
             body: formData
         });
         
-        const data = await response.json();
+        const data = await readJsonResponse(response);
         if (!response.ok) throw new Error(data.error || 'Tải tệp thất bại');
         
         appState = data;
         warnIfCsvOutsideCurrentMonth(appState.dates || []);
+        
+        // Show validation errors if any
+        if (data.validationErrors && data.validationErrors.length > 0) {
+            const errorList = data.validationErrors.map(e => `<li>${escapeHtml(e)}</li>`).join('');
+            showToast('Cảnh báo dữ liệu', 
+                `<div style="max-height: 200px; overflow-y: auto;">
+                    <p>Phát hiện một số vấn đề trong tệp CSV:</p>
+                    <ul class="ps-3 mb-0">${errorList}</ul>
+                </div>`, 
+                'warning'
+            );
+        }
+
         renderApp();
         clearCheckDiffState();
         showToast('Thành công', 'Đã tải dữ liệu CSV thành công.', 'success');
@@ -591,7 +367,11 @@ async function uploadCsvFile(file) {
 
 function initCsvDragAndDrop() {
     const body = document.body;
+    const dropZone = document.getElementById('csv-drop-zone');
+
     if (!body) return;
+
+    // Prevent default drag behaviors on the whole page
     const dragEvents = ['dragenter', 'dragover', 'dragleave', 'drop'];
     dragEvents.forEach((eventName) => {
         body.addEventListener(eventName, (event) => {
@@ -600,6 +380,7 @@ function initCsvDragAndDrop() {
         });
     });
 
+    // Global drag indicator for body
     body.addEventListener('dragenter', (event) => {
         const hasFiles = event.dataTransfer && Array.from(event.dataTransfer.types || []).includes('Files');
         if (!hasFiles) return;
@@ -639,23 +420,97 @@ function initCsvDragAndDrop() {
         setCsvFileNameDisplay(file.name);
         await uploadCsvFile(file);
     });
+
+    // Drop zone interactions
+    if (dropZone) {
+        const fileInput = document.getElementById('csv-file');
+
+        dropZone.addEventListener('click', () => {
+            if (fileInput) fileInput.click();
+        });
+        dropZone.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                if (fileInput) fileInput.click();
+            }
+        });
+
+        dropZone.addEventListener('dragenter', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            dropZone.classList.add('csv-drop-zone-active');
+        });
+
+        dropZone.addEventListener('dragover', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            dropZone.classList.add('csv-drop-zone-active');
+        });
+
+        dropZone.addEventListener('dragleave', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            dropZone.classList.remove('csv-drop-zone-active');
+        });
+
+        dropZone.addEventListener('drop', async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            dropZone.classList.remove('csv-drop-zone-active');
+
+            const files = event.dataTransfer ? event.dataTransfer.files : null;
+            if (!files || files.length === 0) return;
+            if (files.length > 1) {
+                showToast('Lỗi', 'Chỉ hỗ trợ import 1 tệp CSV mỗi lần.', 'warning');
+                return;
+            }
+            const file = files[0];
+            if (!isCsvFile(file)) {
+                showToast('Lỗi', 'Chỉ chấp nhận tệp CSV.', 'warning');
+                return;
+            }
+            setCsvFileNameDisplay(file.name);
+            await uploadCsvFile(file);
+        });
+    }
 }
 
 function updateTotals() {
     let totalHours = 0;
+    const dayTotals = {};
+    appState.dates.forEach(d => dayTotals[d] = 0);
+
     appState.tasks.forEach((task, index) => {
         let taskTotal = 0;
         appState.dates.forEach(date => {
-            taskTotal += parseFloat(task.dayEntries[date] || 0);
+            const h = parseFloat(task.dayEntries[date] || 0);
+            taskTotal += h;
+            dayTotals[date] += h;
         });
         task.totalHours = taskTotal;
         totalHours += taskTotal;
         
         const totalCell = document.getElementById(`total-${index}`);
         if (totalCell) {
-            totalCell.innerText = taskTotal > 0 ? taskTotal.toFixed(2) : '—';
+            totalCell.innerText = taskTotal !== 0 ? taskTotal.toFixed(2) : '—';
         }
     });
+
+    // Update Day Totals (bottom row)
+    appState.dates.forEach(date => {
+        const dayTotalCell = document.getElementById(`day-total-${date}`);
+        if (dayTotalCell) {
+            const v = dayTotals[date];
+            dayTotalCell.textContent = v !== 0 ? v.toFixed(2) : '—';
+        }
+    });
+
+    // Update grand total in bottom row
+    const grandTotalCell = document.getElementById('day-total-all');
+    if (grandTotalCell) {
+        grandTotalCell.textContent = totalHours !== 0 ? totalHours.toFixed(2) : '—';
+    }
+
     appState.effortSum = totalHours;
     document.getElementById('summary-hours').innerText = totalHours.toFixed(2);
 }
@@ -681,7 +536,7 @@ function renderApp() {
 function renderTable() {
     const thead = document.getElementById('table-header');
     const tbody = document.getElementById('table-body');
-    
+
     // Clear existing
     thead.innerHTML = '';
     tbody.innerHTML = '';
@@ -691,23 +546,26 @@ function renderTable() {
                       <th class="sticky-col second-col">Tên</th>
                       <th class="sticky-col third-col text-center">Tổng giờ</th>`;
 
-    const todayIso = new Date().toISOString().slice(0, 10);
-    appState.dates.forEach(date => {
-        const d = new Date(date + 'T00:00:00');
-        const dayOfWeek = d.getDay();
-        const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-        const isToday = date === todayIso;
-        const dayNames = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
-        const label = `${dayNames[dayOfWeek]}<br><span style="font-weight:400;font-size:0.7rem">${date.slice(5)}</span>`;
-        headerHtml += `<th class="text-center min-w-100${isWeekend ? ' weekend-col' : ''}${isToday ? ' today-col' : ''}">${label}</th>`;
-    });
+    // Only render date columns if there are tasks (to avoid wide table when empty)
+    if (appState.tasks.length > 0) {
+        const todayIso = new Date().toISOString().slice(0, 10);
+        appState.dates.forEach(date => {
+            const d = new Date(date + 'T00:00:00');
+            const dayOfWeek = d.getDay();
+            const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+            const isToday = date === todayIso;
+            const dayNames = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+            const label = `${dayNames[dayOfWeek]}<br><span style="font-weight:400;font-size:0.7rem">${date.slice(5)}</span>`;
+            headerHtml += `<th class="text-center min-w-100${isWeekend ? ' weekend-col' : ''}${isToday ? ' today-col' : ''}">${label}</th>`;
+        });
+    }
     headerHtml += `<th class="action-col text-center">Thao tác</th>`;
     thead.innerHTML = headerHtml;
 
     // Render Rows
     if (appState.tasks.length === 0) {
         const tr = document.createElement('tr');
-        const colSpan = 4 + appState.dates.length;
+        const colSpan = 4 + (appState.tasks.length > 0 ? appState.dates.length : 0);
         tr.innerHTML = `<td colspan="${colSpan}" class="empty-state-td">
             <div class="empty-state">
                 <i class="bi bi-inbox empty-state-icon"></i>
@@ -733,7 +591,7 @@ function renderTable() {
                 <td class="sticky-col first-col">${issueCell}</td>
                 <td class="sticky-col second-col" title="${escapeAttr(task.taskName || '')}">${escapeHtml(task.taskName || '')}</td>
                 <td class="sticky-col third-col text-center fw-bold" id="total-${taskIndex}">
-                    ${task.totalHours > 0 ? task.totalHours.toFixed(2) : '—'}
+                    ${task.totalHours !== 0 ? task.totalHours.toFixed(2) : '—'}
                 </td>
             `;
 
@@ -747,15 +605,16 @@ function renderTable() {
                 td.className = `text-center p-1${isWeekend ? ' weekend-col' : ''}`;
                 const val = task.dayEntries[date] || 0;
                 const hoursNum = parseFloat(val || 0) || 0;
-                if (hoursNum > 0) dayTotals[date] += hoursNum;
+                dayTotals[date] += hoursNum;
                 
                 const input = document.createElement('input');
                 input.type = 'number';
                 input.step = '0.5';
-                input.min = '0';
-                input.max = '24';
                 input.placeholder = ' ';
-                input.value = val > 0 ? val : '';
+                input.value = val !== 0 ? val : '';
+                if (val < 0 || val > 24) {
+                    input.classList.add('invalid-cell');
+                }
                 
                 input.dataset.row = String(taskIndex);
                 input.dataset.col = String(3 + appState.dates.indexOf(date));
@@ -776,11 +635,15 @@ function renderTable() {
                 });
 
                 input.addEventListener('change', (e) => {
-                    let newVal = parseFloat(e.target.value) || 0;
-                    if (newVal < 0) newVal = 0;
-                    if (newVal > 24) newVal = 24;
-                    newVal = Math.round(newVal * 2) / 2;
-                    e.target.value = newVal > 0 ? String(newVal) : '';
+                    let newVal = parseFloat(e.target.value);
+                    if (isNaN(newVal)) newVal = 0;
+                    
+                    if (newVal < 0 || newVal > 24) {
+                        e.target.classList.add('invalid-cell');
+                    } else {
+                        e.target.classList.remove('invalid-cell');
+                    }
+                    
                     appState.tasks[taskIndex].dayEntries[date] = newVal;
                     updateTotals(); // Re-render to update totals without rebuilding the table
                     updateSummaryMetrics();
@@ -822,7 +685,7 @@ function renderTable() {
         let totalRowHtml = `
             <td class="sticky-col first-col">Tổng ngày</td>
             <td class="sticky-col second-col"></td>
-            <td class="sticky-col third-col text-center fw-bold">${appState.effortSum > 0 ? appState.effortSum.toFixed(2) : '—'}</td>
+            <td class="sticky-col third-col text-center fw-bold" id="day-total-all">${appState.effortSum !== 0 ? appState.effortSum.toFixed(2) : '—'}</td>
         `;
         totalTr.innerHTML = totalRowHtml;
         appState.dates.forEach((date) => {
@@ -830,8 +693,9 @@ function renderTable() {
             const isWeekend = d.getDay() === 0 || d.getDay() === 6;
             const td = document.createElement('td');
             td.className = `text-center${isWeekend ? ' weekend-col' : ''}`;
+            td.id = `day-total-${date}`;
             const v = dayTotals[date] || 0;
-            td.textContent = v > 0 ? v.toFixed(2) : '—';
+            td.textContent = v !== 0 ? v.toFixed(2) : '—';
             totalTr.appendChild(td);
         });
         const tdAction = document.createElement('td');
@@ -864,6 +728,13 @@ function collectSyncEntries() {
     return out;
 }
 
+function collectCheckData() {
+    const dates = [...appState.dates].sort();
+    const fromDate = dates[0] || '';
+    const toDate = dates[dates.length - 1] || '';
+    return { fromDate, toDate };
+}
+
 function getSyncEntriesForSubmit(collected) {
     if (!Array.isArray(collected) || collected.length === 0) return [];
     if (checkDiffRows.length === 0) return collected;
@@ -883,82 +754,57 @@ function toApiEntries(rows) {
         issue_id: e.issue_id,
         spent_on: e.spent_on,
         hours: e.hours,
-        activity_id: e.activity_id
+        activity_id: e.activity_id,
+        redmine_hours: e.redmine_hours,
+        delta: e.delta,
+        redmine_entries: e.redmine_entries
     }));
 }
 
-function updateSyncActionButtons() {
-    const btnSync = document.getElementById('btn-sync');
-    const btnCheckDiff = document.getElementById('btn-check-diff');
-    const btnRetry = document.getElementById('btn-retry-failed');
-    const btnOverlayRetry = document.getElementById('btn-sync-overlay-retry-failed');
-    const btnRequestHistoryRetry = document.getElementById('btn-request-history-retry-failed');
-    if (!btnSync) return;
-    const hasTasks = appState.tasks.length > 0;
-    const hasFailed = syncResultRows.some(r => r.status === 'error');
-    if (btnRetry) {
-        btnRetry.disabled = !hasFailed || _syncInProgress;
-    }
-    if (btnOverlayRetry) {
-        btnOverlayRetry.disabled = !hasFailed || _syncInProgress;
-    }
-    if (btnRequestHistoryRetry) {
-        btnRequestHistoryRetry.disabled = !hasFailed || _syncInProgress;
-    }
-    if (btnCheckDiff) {
-        btnCheckDiff.disabled = _syncInProgress || !hasTasks || collectSyncEntries().length === 0;
-    }
-    if (!hasTasks) {
-        btnSync.disabled = true;
-    } else {
-        btnSync.disabled = _syncInProgress || getSyncEntriesForSubmit(collectSyncEntries()).length === 0;
-    }
-    updateWorkflowSteps();
+function getCheckDiffEntriesForResolve(collected) {
+    if (!Array.isArray(collected) || collected.length === 0) return [];
+    const diffMap = new Map();
+    checkDiffRows.forEach((row) => {
+        if (row.status === 'pending' || row.error || row.resolution === 'same') return;
+        if (row.delta == null || Number(row.delta || 0) <= 1e-9) return;
+        diffMap.set(makeDiffKey(row.issue_id, row.spent_on), row);
+    });
+    return collected
+        .filter((entry) => diffMap.has(makeDiffKey(entry.issue_id, entry.spent_on)))
+        .map((entry) => {
+            const diff = diffMap.get(makeDiffKey(entry.issue_id, entry.spent_on));
+            return {
+                ...entry,
+                redmine_hours: diff ? diff.redmine_hours : undefined,
+                delta: diff ? diff.delta : undefined,
+                redmine_entries: diff ? diff.redmine_entries : undefined
+            };
+        });
 }
 
-function renderSyncResults() {
-    const overlayResults = document.getElementById('sync-overlay-results');
-    const overlayTbody = document.getElementById('sync-overlay-results-tbody');
-    if (syncResultRows.length === 0) {
-        if (overlayResults) {
-            overlayResults.hidden = true;
-        }
-        updateSyncResultsSummary();
-        return;
+function updateSyncActionButtons() {
+    const btnCheckDiff = document.getElementById('btn-check-diff');
+    const btnSync = document.getElementById('btn-sync');
+    
+    if (btnCheckDiff) {
+        btnCheckDiff.disabled = _checkDiffInProgress || _checkDiffResolveInProgress;
     }
-    if (overlayTbody) {
-        overlayTbody.innerHTML = '';
+
+    if (btnSync) {
+        btnSync.disabled = _checkDiffInProgress || _checkDiffResolveInProgress;
     }
-    if (overlayResults) {
-        overlayResults.hidden = false;
+
+    const btnResolveCheckDiff = document.getElementById('btn-check-diff-resolve');
+    if (btnResolveCheckDiff) {
+        const hasDiffToSync = checkDiffRows.some((row) => {
+            if (row.status === 'pending' || row.error || row.resolution === 'same') return false;
+            return row.delta != null && Number(row.delta || 0) > 1e-9;
+        });
+        btnResolveCheckDiff.disabled = _checkDiffInProgress || _checkDiffResolveInProgress || !hasDiffToSync;
+        btnResolveCheckDiff.innerHTML = _checkDiffResolveInProgress
+            ? '<span class="spinner-border spinner-border-sm me-1" style="width:0.65rem;height:0.65rem;"></span>Đang đồng bộ...'
+            : '<i class="bi bi-cloud-arrow-up me-1"></i>Đồng bộ Redmine theo Web';
     }
-    syncResultRows.forEach(row => {
-        const overlayTr = document.createElement('tr');
-        let statusHtml = '';
-        if (row.status === 'pending') {
-            statusHtml = '<span class="badge text-bg-secondary"><span class="spinner-border spinner-border-sm me-1" style="width:0.65rem;height:0.65rem;"></span>Đang gửi</span>';
-        } else if (row.status === 'ok') {
-            statusHtml = '<span class="badge text-bg-success">Thành công</span>';
-        } else {
-            statusHtml = '<span class="badge text-bg-danger">Thất bại</span>';
-        }
-        const detail = row.error
-            ? (row.httpStatus != null ? `[${row.httpStatus}] ` : '') + escapeHtml(String(row.error).slice(0, 500))
-            : (row.status === 'ok' ? '—' : '');
-        overlayTr.innerHTML = `
-            <td class="text-nowrap">${escapeHtml(String(row.issue_id))}</td>
-            <td class="text-nowrap">${escapeHtml(row.spent_on)}</td>
-            <td class="text-end">${Number(row.hours).toFixed(2)}</td>
-            <td>${statusHtml}</td>
-            <td class="small text-break" style="max-width: 18rem;">${detail || '—'}</td>
-        `;
-        if (overlayTbody) {
-            overlayTbody.appendChild(overlayTr);
-        }
-    });
-    updateSyncResultsSummary();
-    updateSyncOverlayProgress();
-    updateSyncActionButtons();
     updateWorkflowSteps();
 }
 
@@ -975,116 +821,6 @@ function escapeAttr(s) {
         .replace(/</g, '&lt;');
 }
 
-/**
- * @param {ReturnType<typeof toApiEntries>} apiEntries
- */
-async function runSseStream(apiEntries, apiKey) {
-    const response = await fetch('/api/sync/stream', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'text/event-stream'
-        },
-        body: JSON.stringify({ apiKey, entries: apiEntries })
-    });
-
-    if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.error || `HTTP ${response.status}`);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const blocks = buffer.split('\n\n');
-        buffer = blocks.pop() || '';
-        for (const block of blocks) {
-            for (const line of block.split('\n')) {
-                if (line.startsWith('data: ')) {
-                    const payload = JSON.parse(line.slice(6));
-                    if (payload.type === 'result') {
-                        const row = syncResultRows.find(x => x.entry_id === payload.entry_id);
-                        if (row) {
-                            row.status = payload.ok ? 'ok' : 'error';
-                            row.error = payload.error || null;
-                            row.httpStatus = payload.status_code != null ? payload.status_code : null;
-                        }
-                        const detail = payload.ok
-                            ? 'Thành công'
-                            : (payload.status_code != null ? `[${payload.status_code}] ` : '') + (payload.error || 'Có lỗi');
-                        updateRequestHistoryRow(payload.entry_id, payload.ok ? 'ok' : 'error', detail);
-                        renderSyncResults();
-                    } else if (payload.type === 'done') {
-                        const ok = (payload.failed || 0) === 0;
-                        if (ok) {
-                            showToast('Hoàn tất', `Đã xử lý ${payload.total} bản ghi.`, 'success');
-                        } else {
-                            showToast('Hoàn tất (có lỗi)', `Thành công: ${payload.success}, thất bại: ${payload.failed}.`, 'warning');
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-async function handleSync(e) {
-    e.preventDefault();
-    const apiKey = document.getElementById('api-key').value;
-    if (!apiKey) {
-        showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
-        return;
-    }
-
-    const collected = collectSyncEntries();
-    const filtered = getSyncEntriesForSubmit(collected);
-    const missingIssueCount = appState.tasks.filter((task) => !String(task.taskId || '').trim()).length;
-    if (missingIssueCount > 0) {
-        showToast('Lưu ý', `${missingIssueCount} task thiếu Issue ID sẽ bị bỏ qua khi đồng bộ.`, 'warning');
-    }
-    if (filtered.length === 0) {
-        showToast('Thông báo', 'Không có dữ liệu giờ làm việc để đồng bộ.', 'info');
-        return;
-    }
-    const skippedCount = collected.length - filtered.length;
-    if (skippedCount > 0) {
-        showToast('Thông báo', `Đã bỏ qua ${skippedCount} bản ghi (giống nhau/chấp nhận Redmine/chưa xử lý).`, 'info');
-    }
-
-    syncResultRows = filtered.map(r => ({
-        ...r,
-        status: 'pending',
-        error: null,
-        httpStatus: null
-    }));
-    addRequestHistoryRows(filtered);
-    renderSyncResults();
-
-    setSyncOverlayPhase('loading');
-    _syncInProgress = true;
-    setSyncOverlayVisible(true);
-    updateSyncOverlayProgress();
-    updateSyncActionButtons();
-
-    let syncOverlayError = null;
-    try {
-        await runSseStream(toApiEntries(filtered), apiKey);
-    } catch (error) {
-        syncOverlayError = error;
-        showToast('Lỗi', error.message, 'danger');
-    } finally {
-        _syncInProgress = false;
-        setSyncOverlayPhase('done', { hasError: !!syncOverlayError });
-        updateSyncActionButtons();
-        updateWorkflowSteps();
-    }
-}
-
 function setCheckDiffOverlayVisible(isVisible) {
     const overlay = document.getElementById('check-diff-overlay');
     if (!overlay) return;
@@ -1092,57 +828,210 @@ function setCheckDiffOverlayVisible(isVisible) {
     overlay.setAttribute('aria-hidden', isVisible ? 'false' : 'true');
 }
 
+function renderCheckDiffStatus(row, rowKey) {
+    if (row.status === 'pending') {
+        return '<span class="badge text-bg-secondary"><span class="spinner-border spinner-border-sm me-1" style="width:0.65rem;height:0.65rem;"></span>Đang check</span>';
+    }
+    if (row.error) {
+        return `
+            <div class="d-flex align-items-center gap-1">
+                <button type="button" class="btn btn-sm btn-outline-danger check-diff-error-toggle" data-check-error-key="${escapeAttr(rowKey)}" title="${escapeAttr(row.error)}">Lỗi</button>
+                <button type="button" class="btn btn-sm btn-outline-primary py-0 px-1" onclick="handleCheckDiff()" title="Thử lại">
+                    <i class="bi bi-arrow-clockwise"></i>
+                </button>
+            </div>
+        `;
+    }
+    if (row.sync_error) {
+        const errorText = String(row.sync_error);
+        const lines = errorText.split('\n').map(l => l.trim()).filter(l => l);
+        const errorHtml = lines.map(l => `<div class="sync-error-item">${escapeHtml(l)}</div>`).join('');
+        return `
+            <div class="d-flex flex-column align-items-start gap-1">
+                <span class="badge text-bg-danger">Đồng bộ lỗi</span>
+                <div class="sync-error-list">${errorHtml}</div>
+            </div>
+        `;
+    }
+    if (row.resolution === 'same') {
+        return '<span class="badge text-bg-success">Giống nhau</span>';
+    }
+    if (row.redmine_hours !== null && row.web_hours !== null && row.redmine_hours > row.web_hours) {
+        return '<span class="badge bg-danger text-white">Cần điều chỉnh thủ công</span>';
+    }
+    if (row.resolution === 'update_web') {
+        return '<span class="badge text-bg-primary">Update theo Web</span>';
+    }
+    if (row.resolution === 'accept_redmine') {
+        return '<span class="badge text-bg-info">Chấp nhận Redmine</span>';
+    }
+    return '<span class="badge text-bg-warning">Khác nhau</span>';
+}
+
+function renderCheckDiffDelta(row) {
+    const deltaVal = row.delta;
+    if (deltaVal == null) return '—';
+    const prefix = deltaVal > 0 ? '▲ +' : deltaVal < 0 ? '▼ ' : '';
+    const cls = deltaVal > 0 ? 'check-diff-delta-positive' : deltaVal < 0 ? 'check-diff-delta-negative' : 'check-diff-delta-zero';
+    return `<span class="${cls} fw-bold">${prefix}${Number(deltaVal).toFixed(2)}</span>`;
+}
+
+function renderRedmineEntriesPanel(row, rowKey) {
+    if (row.status !== 'done' || row.error) return '';
+    if (_collapsedCheckDiffEntries.has(rowKey)) return '';
+    const entries = Array.isArray(row.redmine_entries) ? row.redmine_entries : [];
+    const totalHours = row.redmine_hours == null ? '0.00' : Number(row.redmine_hours).toFixed(2);
+    const rowsHtml = entries.length > 0
+        ? entries.map((entry, idx) => {
+            const entryId = entry.id == null ? `Entry ${idx + 1}` : `#${escapeHtml(String(entry.id))}`;
+            const hours = Number(entry.hours || 0).toFixed(2);
+            const comments = entry.comments ? escapeHtml(String(entry.comments)) : '—';
+            const createdOn = entry.created_on ? escapeHtml(String(entry.created_on)) : '—';
+            const canMutate = entry.id != null;
+            const entryKey = String(entry.id);
+            const pendingAction = _mutatingCheckDiffEntryActions.get(entryKey);
+            const isMutating = Boolean(pendingAction);
+            const disabledAttr = isMutating ? ' disabled aria-busy="true"' : '';
+            const editIcon = pendingAction === 'edit'
+                ? '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>'
+                : '<i class="bi bi-pencil"></i>';
+            const deleteIcon = pendingAction === 'delete'
+                ? '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>'
+                : '<i class="bi bi-trash3"></i>';
+            const actionHtml = canMutate
+                ? `
+                    <span class="check-diff-entry-actions">
+                        <button type="button" class="btn btn-sm btn-outline-primary check-diff-entry-action" title="${pendingAction === 'edit' ? 'Đang sửa...' : 'Sửa giờ'}" data-entry-action="edit" data-entry-id="${escapeAttr(entryKey)}" data-issue="${escapeAttr(String(row.issue_id))}" data-date="${escapeAttr(String(row.spent_on))}" data-web-hours="${escapeAttr(String(row.web_hours || 0))}" data-current-hours="${escapeAttr(String(entry.hours || 0))}"${disabledAttr}>${editIcon}</button>
+                        <button type="button" class="btn btn-sm btn-outline-danger check-diff-entry-action" title="${pendingAction === 'delete' ? 'Đang xóa...' : 'Xóa entry'}" data-entry-action="delete" data-entry-id="${escapeAttr(entryKey)}" data-issue="${escapeAttr(String(row.issue_id))}" data-date="${escapeAttr(String(row.spent_on))}" data-web-hours="${escapeAttr(String(row.web_hours || 0))}"${disabledAttr}>${deleteIcon}</button>
+                    </span>
+                `
+                : '<span class="text-muted">—</span>';
+            return `
+                <div class="check-diff-entry-row">
+                    <span class="check-diff-entry-id">${entryId}</span>
+                    <span class="check-diff-entry-hours">${hours}h</span>
+                    <span class="check-diff-entry-comment">${comments}</span>
+                    <span class="check-diff-entry-meta">${createdOn}</span>
+                    ${actionHtml}
+                </div>
+            `;
+        }).join('')
+        : '<div class="check-diff-entry-empty">Không có entry Redmine cho dòng này.</div>';
+
+    return `
+        <tr class="check-diff-entry-detail-row">
+            <td colspan="6">
+                <div class="check-diff-detail-panel">
+                    <div class="check-diff-detail-head">
+                        <span>Redmine time entries</span>
+                        <span>${entries.length} entry · ${totalHours}h</span>
+                    </div>
+                    <div class="check-diff-entry-table">
+                        <div class="check-diff-entry-row check-diff-entry-row-head">
+                            <span>Time Entry ID</span>
+                            <span>Hours</span>
+                            <span>Comment</span>
+                            <span>Created</span>
+                            <span></span>
+                        </div>
+                        ${rowsHtml}
+                    </div>
+                </div>
+            </td>
+        </tr>
+    `;
+}
+
+function upsertCheckDiffRowFromCheck(check) {
+    if (!check) return;
+    const key = makeDiffKey(check.issue_id, check.spent_on);
+    const idx = checkDiffRows.findIndex((row) => makeDiffKey(row.issue_id, row.spent_on) === key);
+    const nextRow = {
+        ...check,
+        status: check.error ? 'error' : 'done',
+        original_web_hours: check.web_hours,
+        web_task_snapshots: getTaskSnapshotsForIssueDate(check.issue_id, check.spent_on),
+        resolution: check.is_same ? 'same' : 'unresolved',
+        sync_error: null,
+        sync_action: null
+    };
+    if (idx >= 0) {
+        checkDiffRows[idx] = { ...checkDiffRows[idx], ...nextRow };
+    } else {
+        checkDiffRows.push(nextRow);
+    }
+}
+
+function applyResolveCheckPayload(payload) {
+    if (payload.check) {
+        upsertCheckDiffRowFromCheck(payload.check);
+    }
+    const key = makeDiffKey(payload.issue_id, payload.spent_on);
+    const row = checkDiffRows.find((r) => makeDiffKey(r.issue_id, r.spent_on) === key);
+    if (row) {
+        row.sync_error = payload.ok ? null : payload.error;
+        row.sync_action = payload.action;
+    }
+}
+
+function renderCheckDiffErrorPanel(row, rowKey) {
+    if (!row.error || !_expandedCheckDiffErrors.has(rowKey)) return '';
+    const errorText = String(row.error);
+    const lines = errorText.split('\n').map(l => l.trim()).filter(l => l);
+    const errorHtml = lines.map(l => `<div class="mb-1">${escapeHtml(l)}</div>`).join('');
+    return `
+        <tr class="check-diff-error-detail-row">
+            <td colspan="6">
+                <div class="check-diff-error-detail">
+                    <div class="check-diff-error-title">Chi tiết lỗi</div>
+                    <div class="text-danger fw-bold">${errorHtml}</div>
+                </div>
+            </td>
+        </tr>
+    `;
+}
+
 function renderCheckDiffRows() {
     const tbody = document.getElementById('check-diff-body');
     const countEl = document.getElementById('check-diff-count');
     if (!tbody || !countEl) return;
-    countEl.textContent = String(checkDiffRows.length);
+    const doneCount = checkDiffRows.filter((row) => row.status !== 'pending').length;
+    countEl.textContent = _checkDiffInProgress ? `${doneCount}/${checkDiffRows.length}` : String(checkDiffRows.length);
     renderCheckDiffSummary();
     if (checkDiffRows.length === 0) {
-        tbody.innerHTML = '<tr id="check-diff-empty-row"><td colspan="7" class="text-center text-muted py-4">Chưa có dữ liệu check.</td></tr>';
+        tbody.innerHTML = '<tr id="check-diff-empty-row"><td colspan="6" class="text-center text-muted py-4">Chưa có dữ liệu check.</td></tr>';
         return;
     }
     tbody.innerHTML = '';
     checkDiffRows.forEach((row) => {
         const tr = document.createElement('tr');
-        let statusHtml = '';
+        const rowKey = makeDiffKey(row.issue_id, row.spent_on);
+        tr.className = 'check-diff-main-row';
+        tr.setAttribute('data-check-row-key', rowKey);
         if (row.error) {
-            statusHtml = `<span class="badge text-bg-danger" title="${escapeAttr(row.error)}">Lỗi check</span>`;
-        } else if (row.resolution === 'same') {
-            statusHtml = '<span class="badge text-bg-success">Giống nhau</span>';
-        } else if (row.resolution === 'update_web') {
-            statusHtml = '<span class="badge text-bg-primary">Update theo Web</span>';
-        } else if (row.resolution === 'accept_redmine') {
-            statusHtml = '<span class="badge text-bg-info">Chấp nhận Redmine</span>';
-        } else {
-            statusHtml = '<span class="badge text-bg-warning">Khác nhau</span>';
+            tr.className += ' check-diff-error-row';
+            tr.setAttribute('data-check-error-key', rowKey);
         }
-
-        const deltaVal = row.delta;
-        let deltaHtml = '—';
-        if (deltaVal != null) {
-            const prefix = deltaVal > 0 ? '▲ +' : deltaVal < 0 ? '▼ ' : '';
-            const cls = deltaVal > 0 ? 'check-diff-delta-positive' : deltaVal < 0 ? 'check-diff-delta-negative' : 'check-diff-delta-zero';
-            deltaHtml = `<span class="${cls} fw-bold">${prefix}${Number(deltaVal).toFixed(2)}</span>`;
+        if (row.redmine_hours !== null && row.web_hours !== null && row.redmine_hours > row.web_hours) {
+            tr.classList.add('check-diff-redmine-greater-row');
+        } else if (row.redmine_hours !== null && row.web_hours !== null && row.web_hours > row.redmine_hours) {
+            tr.classList.add('check-diff-web-greater-row');
         }
-
-        const actionDisabled = !!row.error || row.redmine_hours === null;
-        const btnUpdateWeb = `<button type="button" class="btn btn-sm btn-outline-primary me-1" data-action="update_web" data-issue="${escapeAttr(row.issue_id)}" data-date="${escapeAttr(row.spent_on)}" ${actionDisabled ? 'disabled' : ''}>Update theo Web</button>`;
-        const btnAcceptRedmine = `<button type="button" class="btn btn-sm btn-outline-success" data-action="accept_redmine" data-issue="${escapeAttr(row.issue_id)}" data-date="${escapeAttr(row.spent_on)}" ${actionDisabled ? 'disabled' : ''}>Chấp nhận Redmine</button>`;
-        const actionHtml = row.resolution === 'same'
-            ? '<span class="text-muted">Không cần xử lý</span>'
-            : `${btnUpdateWeb}${btnAcceptRedmine}`;
+        const expandIcon = row.status === 'done' && !row.error
+            ? `<i class="bi ${_collapsedCheckDiffEntries.has(rowKey) ? 'bi-chevron-right' : 'bi-chevron-down'} check-diff-expand-icon"></i>`
+            : '';
 
         tr.innerHTML = `
-            <td class="text-nowrap">${escapeHtml(String(row.issue_id))}</td>
+            <td class="text-nowrap">${expandIcon}${escapeHtml(String(row.issue_id))}</td>
             <td class="text-nowrap">${escapeHtml(row.spent_on)}</td>
             <td class="text-end">${Number(row.web_hours || 0).toFixed(2)}</td>
             <td class="text-end">${row.redmine_hours == null ? '—' : Number(row.redmine_hours).toFixed(2)}</td>
-            <td class="text-end">${deltaHtml}</td>
-            <td>${statusHtml}</td>
-            <td>${actionHtml}</td>
+            <td class="text-end">${renderCheckDiffDelta(row)}</td>
+            <td>${renderCheckDiffStatus(row, rowKey)}</td>
         `;
         tbody.appendChild(tr);
+        tbody.insertAdjacentHTML('beforeend', renderRedmineEntriesPanel(row, rowKey));
+        tbody.insertAdjacentHTML('beforeend', renderCheckDiffErrorPanel(row, rowKey));
     });
 }
 
@@ -1190,103 +1079,457 @@ async function runCheckDiff(entries, apiKey) {
         },
         body: JSON.stringify({ apiKey, entries: toApiEntries(entries) })
     });
-    const rawText = await response.text();
-    let data = {};
-    if (rawText) {
-        try {
-            data = JSON.parse(rawText);
-        } catch (_) {
-            data = {};
+    const data = await readJsonResponse(response);
+    if (!response.ok) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return data.items || [];
+}
+
+async function runCheckDiffStream(entries, apiKey) {
+    const response = await fetch('/api/sync/check/stream', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream'
+        },
+        body: JSON.stringify({ apiKey, entries: toApiEntries(entries) })
+    });
+
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() || '';
+        for (const block of blocks) {
+            for (const line of block.split('\n')) {
+                if (!line.startsWith('data: ')) continue;
+                const payload = JSON.parse(line.slice(6));
+                if (payload.type === 'result') {
+                    const key = makeDiffKey(payload.issue_id, payload.spent_on);
+                    const idx = checkDiffRows.findIndex((row) => makeDiffKey(row.issue_id, row.spent_on) === key);
+                    const nextRow = {
+                        ...payload,
+                        status: payload.error ? 'error' : 'done',
+                        original_web_hours: payload.web_hours,
+                        web_task_snapshots: getTaskSnapshotsForIssueDate(payload.issue_id, payload.spent_on),
+                        resolution: payload.is_same ? 'same' : 'unresolved'
+                    };
+                    delete nextRow.type;
+                    if (idx >= 0) {
+                        checkDiffRows[idx] = { ...checkDiffRows[idx], ...nextRow };
+                    } else {
+                        _collapsedCheckDiffEntries.add(key);
+                        checkDiffRows.push(nextRow);
+                    }
+                    renderCheckDiffRows();
+                    renderInlineDiffIndicators();
+                    updateSyncActionButtons();
+                } else if (payload.type === 'done') {
+                    if ((payload.failed || 0) === 0) {
+                        showToast('Hoàn tất', `Đã check ${payload.total} dòng.`, 'success');
+                    } else {
+                        showToast('Hoàn tất (có lỗi)', `Thành công: ${payload.success}, lỗi: ${payload.failed}.`, 'warning');
+                    }
+                }
+            }
         }
     }
+}
+
+async function runCheckDiffRange(checkData, apiKey) {
+    const { fromDate, toDate } = checkData;
+    if (!fromDate || !toDate) {
+        throw new Error('Không có ngày để kiểm tra');
+    }
+
+    const response = await fetch('/api/sync/check/user-range', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey, from_date: fromDate, to_date: toDate })
+    });
+
     if (!response.ok) {
-        const fallback = rawText ? String(rawText).slice(0, 300) : `HTTP ${response.status}`;
-        throw new Error((data && data.error) || fallback);
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${response.status}`);
     }
-    if (!data || !Array.isArray(data.items)) {
-        return [];
+
+    const data = await response.json();
+    const redmineIssues = data.issues || {};
+
+    const webHoursMap = new Map();
+    appState.tasks.forEach(task => {
+        if (!task.taskId) return;
+        const issueId = String(task.taskId);
+        appState.dates.forEach(date => {
+            const hours = parseFloat(task.dayEntries[date] || 0);
+            if (hours > 0) {
+                const key = makeDiffKey(issueId, date);
+                webHoursMap.set(key, (webHoursMap.get(key) || 0) + hours);
+            }
+        });
+    });
+
+    const results = [];
+    for (const [key, webHours] of webHoursMap) {
+        const [issueId, spentOn] = key.split('__');
+        const redmineEntries = redmineIssues[issueId] || [];
+        const redmineEntriesForDate = redmineEntries.filter(e => e.spent_on === spentOn);
+        const redmineHours = redmineEntriesForDate.reduce((sum, e) => sum + (parseFloat(e.hours) || 0), 0);
+        const delta = Math.round((webHours - redmineHours) * 10000) / 10000;
+        const isSame = Math.abs(delta) < 1e-9;
+
+        results.push({
+            issue_id: issueId,
+            spent_on: spentOn,
+            web_hours: Math.round(webHours * 10000) / 10000,
+            redmine_hours: Math.round(redmineHours * 10000) / 10000,
+            delta,
+            is_same: isSame,
+            count_redmine_entries: redmineEntriesForDate.length,
+            redmine_entries: redmineEntriesForDate,
+            status: 'done',
+            original_web_hours: webHours,
+            web_task_snapshots: getTaskSnapshotsForIssueDate(issueId, spentOn),
+            resolution: isSame ? 'same' : 'unresolved'
+        });
     }
-    return data.items;
+
+    for (const [issueId, redmineEntries] of Object.entries(redmineIssues)) {
+        const groupedByDate = new Map();
+        redmineEntries.forEach(e => {
+            const key = makeDiffKey(issueId, e.spent_on);
+            if (!groupedByDate.has(key)) {
+                groupedByDate.set(key, []);
+            }
+            groupedByDate.get(key).push(e);
+        });
+
+        groupedByDate.forEach((entries, key) => {
+            if (webHoursMap.has(key)) return;
+            const [id, spentOn] = key.split('__');
+            const redmineHours = entries.reduce((sum, e) => sum + (parseFloat(e.hours) || 0), 0);
+            if (redmineHours > 0) {
+                results.push({
+                    issue_id: id,
+                    spent_on: spentOn,
+                    web_hours: 0,
+                    redmine_hours: Math.round(redmineHours * 10000) / 10000,
+                    delta: Math.round((0 - redmineHours) * 10000) / 10000,
+                    is_same: false,
+                    count_redmine_entries: entries.length,
+                    redmine_entries: entries,
+                    status: 'done',
+                    original_web_hours: 0,
+                    web_task_snapshots: getTaskSnapshotsForIssueDate(id, spentOn),
+                    resolution: 'unresolved'
+                });
+            }
+        });
+    }
+
+    return results;
+}
+    
+async function runResolveCheckDiffStream(entries, apiKey) {
+    const response = await fetch('/api/sync/check/resolve/stream', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream'
+        },
+        body: JSON.stringify({ apiKey, entries: toApiEntries(entries) })
+    });
+
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() || '';
+        for (const block of blocks) {
+            for (const line of block.split('\n')) {
+                if (!line.startsWith('data: ')) continue;
+                const payload = JSON.parse(line.slice(6));
+                if (payload.type === 'result') {
+                    applyResolveCheckPayload(payload);
+                    renderCheckDiffRows();
+                    renderInlineDiffIndicators();
+                    updateSyncActionButtons();
+                    if (!payload.ok && payload.action === 'blocked_redmine_greater') {
+                        showToast('Không đồng bộ được', `${payload.issue_id} ngày ${payload.spent_on}: Redmine lớn hơn Web.`, 'warning');
+                    }
+                } else if (payload.type === 'done') {
+                    if ((payload.failed || 0) === 0) {
+                        showToast('Hoàn tất', `Đã đồng bộ ${payload.success} dòng, bỏ qua ${payload.skipped} dòng đã giống nhau.`, 'success');
+                    } else {
+                        showToast('Hoàn tất (có dòng chưa đồng bộ)', `Thành công: ${payload.success}, bỏ qua: ${payload.skipped}, không đồng bộ: ${payload.failed}.`, 'warning');
+                    }
+                }
+            }
+        }
+    }
+}
+
+async function mutateRedmineTimeEntry({ entryId, issueId, spentOn, webHours, hours, method, apiKey }) {
+    const body = {
+        apiKey,
+        issueId,
+        spentOn,
+        webHours,
+        activityId: DEFAULT_ACTIVITY_ID
+    };
+    if (method === 'PATCH') {
+        body.hours = hours;
+    }
+    const response = await fetch(`/api/sync/check/time-entry/${encodeURIComponent(entryId)}`, {
+        method,
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+    });
+    const data = await readJsonResponse(response);
+    if (!response.ok || !data.ok) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return data.check;
+}
+
+async function handleCheckDiffEntryAction(btn) {
+    const apiKeyInput = document.getElementById('api-key');
+    if (!apiKeyInput.value) {
+        apiKeyInput.reportValidity();
+        return;
+    }
+    const apiKey = apiKeyInput.value;
+    const action = btn.getAttribute('data-entry-action');
+    const entryId = btn.getAttribute('data-entry-id');
+    const issueId = btn.getAttribute('data-issue');
+    const spentOn = btn.getAttribute('data-date');
+    const webHours = parseFloat(btn.getAttribute('data-web-hours') || '0') || 0;
+    if (!action || !entryId || !issueId || !spentOn) return;
+    if (_mutatingCheckDiffEntryActions.has(entryId)) return;
+
+    let method = 'DELETE';
+    let hours = null;
+    if (action === 'edit') {
+        const currentHours = parseFloat(btn.getAttribute('data-current-hours') || '0') || 0;
+        const raw = window.prompt('Nhập giờ mới cho time entry Redmine:', String(currentHours));
+        if (raw == null) return;
+        hours = parseFloat(raw);
+        if (!Number.isFinite(hours) || hours < 0) {
+            showToast('Lỗi', 'Giờ chỉnh sửa không hợp lệ.', 'warning');
+            return;
+        }
+        method = 'PATCH';
+    } else if (action === 'delete') {
+        if (!window.confirm(`Xóa time entry #${entryId}?`)) return;
+    } else {
+        return;
+    }
+
+    _mutatingCheckDiffEntryActions.set(entryId, action);
+    renderCheckDiffRows();
+    try {
+        const check = await mutateRedmineTimeEntry({
+            entryId,
+            issueId,
+            spentOn,
+            webHours,
+            hours,
+            method,
+            apiKey
+        });
+        upsertCheckDiffRowFromCheck(check);
+        renderInlineDiffIndicators();
+        updateSyncActionButtons();
+        showToast('Thành công', action === 'edit' ? 'Đã sửa time entry.' : 'Đã xóa time entry.', 'success');
+    } catch (error) {
+        showToast('Lỗi', error.message, 'danger');
+    } finally {
+        _mutatingCheckDiffEntryActions.delete(entryId);
+        renderCheckDiffRows();
+    }
+}
+
+function hasInvalidHours() {
+    return appState.tasks.some(task => 
+        Object.values(task.dayEntries).some(h => {
+            const val = parseFloat(h);
+            return val < 0 || val > 24;
+        })
+    );
 }
 
 async function handleCheckDiff() {
-    const btnCheckDiff = document.getElementById('btn-check-diff');
-    const originalBtnHtml = btnCheckDiff ? btnCheckDiff.innerHTML : '';
-    const apiKey = document.getElementById('api-key').value;
-    if (!apiKey) {
-        showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
+    if (_checkDiffInProgress || _checkDiffResolveInProgress) return;
+    if (hasInvalidHours()) {
+        showAlert('Lỗi dữ liệu: Vui lòng sửa các ô có giờ làm việc âm hoặc vượt quá 24h trước khi tiếp tục.');
+        return;
+    }
+    const apiKeyInput = document.getElementById('api-key');
+    if (!apiKeyInput.value) {
+        apiKeyInput.reportValidity();
+        return;
+    }
+    const apiKey = apiKeyInput.value;
+    const checkData = collectCheckData();
+    if (!checkData.fromDate || !checkData.toDate) {
+        showToast('Thông báo', 'Không có ngày để kiểm tra.', 'info');
         return;
     }
     const collected = collectSyncEntries();
-    if (collected.length === 0) {
-        showToast('Thông báo', 'Không có dữ liệu giờ làm việc để kiểm tra.', 'info');
-        return;
-    }
-    if (btnCheckDiff) {
-        btnCheckDiff.disabled = true;
-        btnCheckDiff.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Đang check...';
-    }
+    _expandedCheckDiffErrors = new Set();
+    checkDiffRows = buildPendingCheckDiffRows(collected);
+    _collapsedCheckDiffEntries = new Set(
+        checkDiffRows.map((row) => makeDiffKey(row.issue_id, row.spent_on))
+    );
+    _checkDiffInProgress = true;
+    renderCheckDiffRows();
+    renderInlineDiffIndicators();
+    setCheckDiffOverlayVisible(true);
+    updateSyncActionButtons();
+
     try {
-        const items = await runCheckDiff(collected, apiKey);
-        checkDiffRows = items.map((item) => ({
-            ...item,
-            original_web_hours: item.web_hours,
-            web_task_snapshots: getTaskSnapshotsForIssueDate(item.issue_id, item.spent_on),
-            resolution: item.is_same ? 'same' : 'unresolved'
-        }));
-        renderCheckDiffRows();
-        renderInlineDiffIndicators();
-        setCheckDiffOverlayVisible(true);
-        updateSyncActionButtons();
+        const results = await runCheckDiffRange(checkData, apiKey);
+        checkDiffRows = results;
+        checkDiffRows.forEach(row => {
+            const key = makeDiffKey(row.issue_id, row.spent_on);
+            if (row.redmine_hours !== null && row.web_hours !== null && row.redmine_hours > row.web_hours) {
+                _collapsedCheckDiffEntries.delete(key);
+            } else {
+                _collapsedCheckDiffEntries.add(key);
+            }
+        });
+        showToast('Hoàn tất', `Đã kiểm tra xong ${results.length} dòng.`, 'success');
     } catch (error) {
         showToast('Lỗi', error.message, 'danger');
+        checkDiffRows.forEach(row => {
+            row.status = 'error';
+            row.error = error.message;
+        });
     } finally {
-        if (btnCheckDiff) {
-            btnCheckDiff.innerHTML = originalBtnHtml;
-        }
+        _checkDiffInProgress = false;
+        renderCheckDiffRows();
+        renderInlineDiffIndicators();
         updateSyncActionButtons();
     }
 }
 
-async function handleRetryFailed() {
-    const apiKey = document.getElementById('api-key').value;
-    if (!apiKey) {
-        showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
+async function handleSync(e) {
+    if (e) e.preventDefault();
+    if (_checkDiffInProgress || _checkDiffResolveInProgress) return;
+    if (hasInvalidHours()) {
+        showAlert('Lỗi dữ liệu: Vui lòng sửa các ô có giờ làm việc âm hoặc vượt quá 24h trước khi tiếp tục.');
         return;
     }
-    const failed = syncResultRows.filter(r => r.status === 'error');
-    if (failed.length === 0) {
-        showToast('Thông báo', 'Không có bản ghi thất bại.', 'info');
+    const apiKeyInput = document.getElementById('api-key');
+    if (!apiKeyInput.value) {
+        apiKeyInput.reportValidity();
         return;
     }
-
-    failed.forEach(r => {
-        r.status = 'pending';
-        r.error = null;
-        r.httpStatus = null;
-    });
-    addRequestHistoryRows(failed);
-    renderSyncResults();
-
-    const btnRetry = document.getElementById('btn-retry-failed');
-    setSyncOverlayPhase('loading');
-    _syncInProgress = true;
-    setSyncOverlayVisible(true);
-    updateSyncOverlayProgress();
+    const apiKey = apiKeyInput.value;
+    const checkData = collectCheckData();
+    if (!checkData.fromDate || !checkData.toDate) {
+        showToast('Thông báo', 'Không có ngày để đồng bộ.', 'info');
+        return;
+    }
+    const collected = collectSyncEntries();
+    _expandedCheckDiffErrors = new Set();
+    checkDiffRows = buildPendingCheckDiffRows(collected);
+    _collapsedCheckDiffEntries = new Set(
+        checkDiffRows.map((row) => makeDiffKey(row.issue_id, row.spent_on))
+    );
+    _checkDiffInProgress = true;
+    renderCheckDiffRows();
+    renderInlineDiffIndicators();
+    setCheckDiffOverlayVisible(true);
     updateSyncActionButtons();
-    if (btnRetry) btnRetry.disabled = true;
 
-    let syncOverlayError = null;
     try {
-        await runSseStream(toApiEntries(failed), apiKey);
+        // Bước 1: Check
+        const results = await runCheckDiffRange(checkData, apiKey);
+        checkDiffRows = results;
+        checkDiffRows.forEach(row => {
+            const key = makeDiffKey(row.issue_id, row.spent_on);
+            if (row.redmine_hours !== null && row.web_hours !== null && row.redmine_hours > row.web_hours) {
+                _collapsedCheckDiffEntries.delete(key);
+            } else {
+                _collapsedCheckDiffEntries.add(key);
+            }
+        });
+        
+        // Bước 2: Tự động đồng bộ các dòng có chênh lệch (Web > Redmine)
+        const filtered = getCheckDiffEntriesForResolve(collected);
+        if (filtered.length > 0) {
+            _checkDiffResolveInProgress = true;
+            _checkDiffInProgress = false; // Chuyển trạng thái từ check sang resolve
+            updateSyncActionButtons();
+            await runResolveCheckDiffStream(filtered, apiKey);
+        } else {
+            showToast('Hoàn tất', `Dữ liệu đã khớp, không cần đồng bộ.`, 'success');
+        }
     } catch (error) {
-        syncOverlayError = error;
+        showToast('Lỗi', error.message, 'danger');
+        checkDiffRows.forEach(row => {
+            row.status = 'error';
+            row.error = error.message;
+        });
+    } finally {
+        _checkDiffInProgress = false;
+        _checkDiffResolveInProgress = false;
+        renderCheckDiffRows();
+        renderInlineDiffIndicators();
+        updateSyncActionButtons();
+    }
+}
+
+async function handleResolveCheckDiff() {
+    if (hasInvalidHours()) {
+        showAlert('Lỗi dữ liệu: Vui lòng sửa các ô có giờ làm việc âm hoặc vượt quá 24h trước khi tiếp tục.');
+        return;
+    }
+    const apiKeyInput = document.getElementById('api-key');
+    if (!apiKeyInput.value) {
+        apiKeyInput.reportValidity();
+        return;
+    }
+    const apiKey = apiKeyInput.value;
+    const collected = collectSyncEntries();
+    const filtered = getCheckDiffEntriesForResolve(collected);
+    if (filtered.length === 0) {
+        showToast('Thông báo', 'Không có dữ liệu giờ làm việc để đồng bộ.', 'info');
+        return;
+    }
+    _checkDiffResolveInProgress = true;
+    updateSyncActionButtons();
+    try {
+        await runResolveCheckDiffStream(filtered, apiKey);
+    } catch (error) {
         showToast('Lỗi', error.message, 'danger');
     } finally {
-        _syncInProgress = false;
-        setSyncOverlayPhase('done', { hasError: !!syncOverlayError });
+        _checkDiffResolveInProgress = false;
         updateSyncActionButtons();
-        updateWorkflowSteps();
     }
 }
 
@@ -1394,15 +1637,6 @@ function focusGridInputByPosition(row, col) {
     nextInput.select();
 }
 
-function updateSyncOverlayProgress() {
-    const textEl = document.getElementById('sync-overlay-text');
-    if (!textEl) return;
-    if (!_syncInProgress || syncResultRows.length === 0) return;
-    const stats = getSyncStats();
-    const completed = stats.ok + stats.error;
-    textEl.textContent = `Đang đồng bộ dữ liệu... (${completed}/${stats.total})`;
-}
-
 function updateCurrentMonthLabel() {
     const el = document.getElementById('current-month-label');
     if (!el) return;
@@ -1428,10 +1662,10 @@ function updateWorkflowSteps() {
     if (!s1 || !s2 || !s3) return;
     const hasTasks = appState.tasks.length > 0;
     s1.classList.toggle('is-active', !hasTasks);
-    s2.classList.toggle('is-active', hasTasks && !_syncInProgress);
-    s3.classList.toggle('is-active', _syncInProgress);
+    s2.classList.toggle('is-active', hasTasks && !_checkDiffInProgress && !_checkDiffResolveInProgress);
+    s3.classList.toggle('is-active', _checkDiffInProgress || _checkDiffResolveInProgress);
     s1.classList.toggle('is-done', hasTasks);
-    s2.classList.toggle('is-done', syncResultRows.length > 0);
+    s2.classList.toggle('is-done', checkDiffRows.length > 0);
 }
 
 function handleEditTask(taskIndex) {
@@ -1443,6 +1677,41 @@ function handleEditTask(taskIndex) {
 }
 
 document.addEventListener('click', (event) => {
+    const entryActionBtn = event.target.closest('button[data-entry-action][data-entry-id]');
+    if (entryActionBtn) {
+        handleCheckDiffEntryAction(entryActionBtn);
+        return;
+    }
+
+    const errorToggle = event.target.closest('[data-check-error-key]');
+    if (errorToggle && !event.target.closest('button[data-action][data-issue][data-date]')) {
+        const key = errorToggle.getAttribute('data-check-error-key');
+        if (key) {
+            if (_expandedCheckDiffErrors.has(key)) {
+                _expandedCheckDiffErrors.delete(key);
+            } else {
+                _expandedCheckDiffErrors.add(key);
+            }
+            renderCheckDiffRows();
+            return;
+        }
+    }
+
+    const mainRow = event.target.closest('tr[data-check-row-key]');
+    if (mainRow && !event.target.closest('button')) {
+        const key = mainRow.getAttribute('data-check-row-key');
+        const row = checkDiffRows.find((item) => makeDiffKey(item.issue_id, item.spent_on) === key);
+        if (key && row && row.status === 'done' && !row.error) {
+            if (_collapsedCheckDiffEntries.has(key)) {
+                _collapsedCheckDiffEntries.delete(key);
+            } else {
+                _collapsedCheckDiffEntries.add(key);
+            }
+            renderCheckDiffRows();
+            return;
+        }
+    }
+
     const btn = event.target.closest('button[data-action][data-issue][data-date]');
     if (!btn) return;
     const action = btn.getAttribute('data-action');
@@ -1466,7 +1735,8 @@ function renderCheckDiffSummary() {
     let same = 0, diff = 0, resolved = 0, error = 0;
     let totalWeb = 0, totalRedmine = 0;
     checkDiffRows.forEach((row) => {
-        if (row.error) { error++; return; }
+        if (row.status === 'pending') return;
+        if (row.error || row.sync_error) { error++; return; }
         totalWeb += parseFloat(row.web_hours || 0);
         totalRedmine += parseFloat(row.redmine_hours || 0);
         if (row.resolution === 'same') same++;
@@ -1507,7 +1777,7 @@ function getDiffForCell(issueId, spentOn) {
 
 /** Determine the CSS class suffix for a diff row's resolution state */
 function _diffDotClass(row) {
-    if (row.error) return 'diff-badge-error';
+    if (row.error || row.sync_error) return 'diff-badge-error';
     if (row.resolution === 'same') return 'diff-badge-same';
     if (row.resolution === 'update_web') return 'diff-badge-update-web';
     if (row.resolution === 'accept_redmine') return 'diff-badge-accept-redmine';
@@ -1516,7 +1786,8 @@ function _diffDotClass(row) {
 
 /** Determine the cell CSS class suffix for td tinting */
 function _diffCellClass(row) {
-    if (row.error) return 'diff-cell-error';
+    if (row.error || row.sync_error) return 'diff-cell-error';
+    if (row.redmine_hours !== null && row.web_hours !== null && row.redmine_hours > row.web_hours) return 'diff-cell-redmine-greater';
     if (row.resolution === 'same') return 'diff-cell-same';
     if (row.resolution === 'update_web') return 'diff-cell-update-web';
     if (row.resolution === 'accept_redmine') return 'diff-cell-accept-redmine';
@@ -1525,7 +1796,8 @@ function _diffCellClass(row) {
 
 /** Short label for the badge */
 function _diffBadgeLabel(row) {
-    if (row.error) return '⚠ Lỗi';
+    if (row.error || row.sync_error) return '⚠ Lỗi';
+    if (row.redmine_hours !== null && row.web_hours !== null && row.redmine_hours > row.web_hours) return '⚠ Cần chỉnh sửa';
     if (row.resolution === 'same') return '✓ OK';
     if (row.resolution === 'update_web') return '↑ Web';
     if (row.resolution === 'accept_redmine') return '↓ RM';
@@ -1535,11 +1807,13 @@ function _diffBadgeLabel(row) {
 /** Build tooltip text for a diff row */
 function _diffTipText(row) {
     if (row.error) return `Lỗi: ${row.error}`;
+    if (row.sync_error) return `Không đồng bộ được: ${row.sync_error}`;
     const webH = Number(row.web_hours || 0).toFixed(2);
     const rmH = row.redmine_hours != null ? Number(row.redmine_hours).toFixed(2) : '—';
     const d = row.delta != null ? (row.delta > 0 ? '+' : '') + Number(row.delta).toFixed(2) : '—';
     let label = '';
-    if (row.resolution === 'same') label = ' ✓';
+    if (row.redmine_hours !== null && row.web_hours !== null && row.redmine_hours > row.web_hours) label = ' ⚠ Cần chỉnh sửa thủ công';
+    else if (row.resolution === 'same') label = ' ✓';
     else if (row.resolution === 'update_web') label = ' → Web';
     else if (row.resolution === 'accept_redmine') label = ' → RM';
     return `Web: ${webH}h | RM: ${rmH}h | Δ ${d}h${label}`;
@@ -1551,7 +1825,7 @@ function _diffTipText(row) {
  */
 function renderInlineDiffIndicators() {
     // Remove all existing td tint classes
-    const DIFF_CELL_CLASSES = ['diff-cell-same','diff-cell-diff','diff-cell-update-web','diff-cell-accept-redmine','diff-cell-error'];
+    const DIFF_CELL_CLASSES = ['diff-cell-same','diff-cell-diff','diff-cell-redmine-greater','diff-cell-update-web','diff-cell-accept-redmine','diff-cell-error'];
     document.querySelectorAll('#matrix-table td').forEach((td) => td.classList.remove(...DIFF_CELL_CLASSES));
 
     if (checkDiffRows.length === 0) return;
@@ -1716,6 +1990,15 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 });
 
+function showAlert(message) {
+    const modalBody = document.getElementById('customAlertModalBody');
+    if (modalBody) {
+        modalBody.innerText = message;
+    }
+    const modal = new bootstrap.Modal(document.getElementById('customAlertModal'));
+    modal.show();
+}
+
 function showToast(title, message, type = 'primary') {
   const toastEl = document.getElementById('liveToast');
   const toastTitle = document.getElementById('toast-title');
@@ -1733,8 +2016,11 @@ function showToast(title, message, type = 'primary') {
   const iconClass = icons[type] || icons.primary;
   toastIcon.className = `bi me-2 ${iconClass}`;
 
-  toastTitle.innerText = title;
-  toastMessage.innerText = message;
+  if (typeof message === 'string' && message.includes('<')) {
+    toastMessage.innerHTML = message;
+  } else {
+    toastMessage.innerText = message || '';
+  }
 
   const toast = new bootstrap.Toast(toastEl);
   toast.show();
