@@ -399,6 +399,161 @@ Control Cards (Upload & Sync)
   opacity: 1;
 }
 
+/* Card chứa dropdown: không clip để menu xổ xuống dưới và nổi trên bảng */
+.control-card.control-card--has-dropdown {
+  overflow: visible;
+  z-index: 10;
+}
+
+.control-card--has-dropdown::before {
+  border-top-left-radius: inherit;
+  border-top-right-radius: inherit;
+}
+
+/* Nút chọn API key: viền giống .form-control (.btn mặc định border: none) */
+.btn.api-key-select {
+  border: 2px solid var(--gray-200);
+  background: white;
+  color: var(--gray-700);
+  font-weight: 500;
+}
+
+.btn.api-key-select:hover,
+.btn.api-key-select:focus-visible,
+.btn.api-key-select.show {
+  border-color: var(--primary);
+  background: white;
+  color: var(--gray-700);
+}
+
+.api-key-menu {
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  padding: 0.375rem;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.api-key-menu .dropdown-divider {
+  margin: 0.375rem 0;
+  border-color: var(--gray-100);
+}
+
+.api-key-menu .api-key-option {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem;
+  border-radius: var(--radius-md);
+  font-size: var(--font-sm);
+  color: var(--gray-700);
+  transition: background-color var(--transition-fast);
+}
+
+.api-key-menu .api-key-option:hover,
+.api-key-menu .api-key-option:focus {
+  background: var(--gray-50);
+  color: var(--gray-800);
+}
+
+.api-key-menu .api-key-option:active,
+.api-key-menu .api-key-option.is-active {
+  background: var(--primary-soft);
+  color: var(--gray-800);
+}
+
+.api-key-option-icon {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--gray-100);
+  color: var(--gray-500);
+}
+
+.api-key-option.is-active .api-key-option-icon {
+  background: var(--primary-gradient);
+  color: white;
+}
+
+.api-key-option-text {
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.api-key-option-name {
+  font-weight: 600;
+  color: var(--gray-800);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.api-key-option-mask {
+  font-family: var(--bs-font-monospace);
+  font-size: var(--font-xs);
+  color: var(--gray-400);
+}
+
+.api-key-option-actions {
+  display: flex;
+  gap: 0.125rem;
+  flex-shrink: 0;
+}
+
+.api-key-action {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--gray-400);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+}
+
+.api-key-action:hover {
+  background: white;
+  color: var(--primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.api-key-action--danger:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.api-key-menu .api-key-add {
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.api-key-add .api-key-option-icon {
+  background: transparent;
+  border: 2px dashed var(--gray-300);
+  color: var(--primary);
+}
+
+.api-key-add:hover .api-key-option-icon {
+  border-color: var(--primary);
+}
+
+.api-key-empty {
+  padding: 0.75rem;
+  text-align: center;
+  font-size: var(--font-xs);
+  color: var(--gray-400);
+}
+
 .control-card-header {
   display: flex;
   align-items: flex-start;

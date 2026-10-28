@@ -1,19 +1,30 @@
 const { test, expect } = require('@playwright/test');
 
+// Lưu sẵn 1 API key và chọn nó (ô nhập key đã được thay bằng dropdown đọc từ localStorage)
+async function selectTestApiKey(page) {
+  await page.evaluate(() => {
+    localStorage.setItem('redmine_log_time.apiKeys', JSON.stringify({
+      activeId: 'k_test',
+      items: [{ id: 'k_test', name: 'Test key', key: 'test-api-key' }]
+    }));
+  });
+  await page.reload();
+}
+
 test.describe('Check Diff Feature', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
   });
 
   test('check diff button is visible and enabled when API key is entered', async ({ page }) => {
-    const apiKeyInput = page.locator('#api-key');
+    const apiKeySelect = page.locator('#btn-api-key-select');
     const checkDiffBtn = page.locator('#btn-check-diff');
 
-    await expect(apiKeyInput).toBeVisible();
+    await expect(apiKeySelect).toBeVisible();
     await expect(checkDiffBtn).toBeVisible();
     await expect(checkDiffBtn).toBeDisabled();
 
-    await apiKeyInput.fill('test-api-key');
+    await selectTestApiKey(page);
     await expect(checkDiffBtn).toBeEnabled();
   });
 
@@ -27,10 +38,9 @@ test.describe('Check Diff Feature', () => {
   });
 
   test('check diff overlay appears while checking', async ({ page }) => {
-    const apiKeyInput = page.locator('#api-key');
     const checkDiffBtn = page.locator('#btn-check-diff');
 
-    await apiKeyInput.fill('test-api-key');
+    await selectTestApiKey(page);
 
     const checkDiffOverlay = page.locator('#check-diff-overlay, .overlay');
     await checkDiffBtn.click();
@@ -39,10 +49,9 @@ test.describe('Check Diff Feature', () => {
   });
 
   test('collectCheckData sends only from_date and to_date', async ({ page }) => {
-    const apiKeyInput = page.locator('#api-key');
     const checkDiffBtn = page.locator('#btn-check-diff');
 
-    await apiKeyInput.fill('test-api-key');
+    await selectTestApiKey(page);
 
     page.on('request', async (request) => {
       if (request.url().includes('/api/sync/check/user-range')) {
@@ -62,8 +71,7 @@ test.describe('Check Diff Results Display', () => {
   test('displays diff results when check completes', async ({ page }) => {
     await page.goto('/');
 
-    const apiKeyInput = page.locator('#api-key');
-    await apiKeyInput.fill('test-api-key');
+    await selectTestApiKey(page);
 
     const checkDiffBtn = page.locator('#btn-check-diff');
     await checkDiffBtn.click();

@@ -5,6 +5,17 @@ from playwright.sync_api import expect
 TEST_URL = "http://localhost:5001"
 
 
+def select_test_api_key(page):
+    """Lưu sẵn 1 API key và chọn nó (ô nhập key đã được thay bằng dropdown đọc từ localStorage)."""
+    page.evaluate(
+        """() => localStorage.setItem('redmine_log_time.apiKeys', JSON.stringify({
+            activeId: 'k_test',
+            items: [{ id: 'k_test', name: 'Test key', key: 'test-api-key' }]
+        }))"""
+    )
+    page.reload()
+
+
 def test_check_diff_button_exists(page):
     page.goto(TEST_URL)
     page.wait_for_load_state("networkidle")
@@ -13,13 +24,13 @@ def test_check_diff_button_exists(page):
     print("Page content length:", len(content))
     print("Page title:", page.title())
 
-    api_key_input = page.locator("#api-key")
+    api_key_select = page.locator("#btn-api-key-select")
     check_diff_btn = page.locator("#btn-check-diff")
 
-    print("api_key_input count:", api_key_input.count())
+    print("api_key_select count:", api_key_select.count())
     print("check_diff_btn count:", check_diff_btn.count())
 
-    expect(api_key_input).to_be_visible()
+    expect(api_key_select).to_be_visible()
     expect(check_diff_btn).to_be_visible()
 
 
@@ -33,17 +44,15 @@ def test_check_diff_button_disabled_without_api_key(page):
 def test_check_diff_button_enabled_with_api_key(page):
     page.goto(TEST_URL)
     page.wait_for_load_state("networkidle")
-    api_key_input = page.locator("#api-key")
     check_diff_btn = page.locator("#btn-check-diff")
 
-    api_key_input.fill("test-api-key")
+    select_test_api_key(page)
     expect(check_diff_btn).to_be_enabled()
 
 
 def test_collect_check_data_sends_only_date_range(page):
     page.goto(TEST_URL)
     page.wait_for_load_state("networkidle")
-    api_key_input = page.locator("#api-key")
     check_diff_btn = page.locator("#btn-check-diff")
 
     def handle_route(route):
@@ -58,7 +67,7 @@ def test_collect_check_data_sends_only_date_range(page):
 
     page.route("**/api/sync/check/user-range", handle_route)
 
-    api_key_input.fill("test-api-key")
+    select_test_api_key(page)
     check_diff_btn.click()
 
     page.wait_for_timeout(500)
@@ -67,7 +76,6 @@ def test_collect_check_data_sends_only_date_range(page):
 def test_check_diff_returns_all_redmine_entries_in_date_range(page):
     page.goto(TEST_URL)
     page.wait_for_load_state("networkidle")
-    api_key_input = page.locator("#api-key")
     check_diff_btn = page.locator("#btn-check-diff")
 
     def handle_route(route):
@@ -76,7 +84,7 @@ def test_check_diff_returns_all_redmine_entries_in_date_range(page):
 
     page.route("**/api/sync/check/user-range", handle_route)
 
-    api_key_input.fill("test-api-key")
+    select_test_api_key(page)
     check_diff_btn.click()
 
     page.wait_for_timeout(1000)

@@ -96,7 +96,7 @@
                 </div>
             </div>
             <div class="col-lg-6">
-                <div class="card control-card h-100">
+                <div class="card control-card control-card--has-dropdown h-100">
                     <div class="card-body">
                         <div class="control-card-header mb-3">
                             <div class="control-card-icon bg-purple-soft">
@@ -111,18 +111,11 @@
                         </div>
 
                         <form id="sync-form" class="d-flex flex-wrap align-items-center gap-2">
-                            <label for="api-key" class="visually-hidden">API Key Redmine</label>
-                            <div class="position-relative flex-grow-1" style="min-width: 260px;">
-                                <i class="bi bi-key position-absolute top-50 start-0 translate-middle-y ms-2 text-secondary" style="font-size: 0.9rem; pointer-events: none;"></i>
-                                <input class="form-control form-control-sm" type="password" id="api-key" placeholder="Nhập API Key Redmine" autocomplete="off" autocapitalize="off" spellcheck="false" required style="padding-left: 2.2rem; padding-right: 4rem;">
-                                <div class="position-absolute top-50 end-0 translate-middle-y d-flex gap-1 me-1">
-                                    <button class="btn-icon-xs" type="button" id="btn-toggle-api-key" title="Hiện hoặc ẩn API key">
-                                        <i class="bi bi-eye"></i>
-                                    </button>
-                                    <button class="btn-icon-xs" type="button" id="btn-clear-api-key" title="Xóa API key">
-                                        <i class="bi bi-x-lg"></i>
-                                    </button>
-                                </div>
+                            <div class="dropdown flex-grow-1" style="min-width: 260px;">
+                                <button class="btn btn-sm api-key-select dropdown-toggle w-100 d-flex align-items-center justify-content-between" type="button" id="btn-api-key-select" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Chọn API Key Redmine">
+                                    <span class="text-truncate"><i class="bi bi-key me-1"></i><span id="api-key-select-label">Chọn API key</span></span>
+                                </button>
+                                <ul class="dropdown-menu w-100 api-key-menu" id="api-key-menu" aria-labelledby="btn-api-key-select"></ul>
                             </div>
                             <button type="button" class="btn btn-outline-primary btn-sm text-nowrap" id="btn-check-diff">
                                 <i class="bi bi-search me-1"></i>Check
@@ -289,6 +282,42 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Hủy</button>
                     <button type="button" class="btn btn-sm btn-indigo" id="btn-save-edit">
+                        <i class="bi bi-check-lg me-1"></i>Lưu
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- API Key Modal -->
+    <div class="modal fade" id="apiKeyModal" tabindex="-1" aria-labelledby="apiKeyModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h6 class="modal-title fw-semibold" id="apiKeyModalLabel">
+                        <i class="bi bi-key me-2 text-indigo"></i><span id="api-key-modal-title">Thêm API key</span>
+                    </h6>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Đóng"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold" for="api-key-name" style="font-size:0.85rem;">Tên gợi nhớ</label>
+                        <input type="text" class="form-control form-control-sm" id="api-key-name" placeholder="VD: HBLab - cá nhân" autocomplete="off">
+                    </div>
+                    <div class="mb-1">
+                        <label class="form-label fw-semibold" for="api-key-value" style="font-size:0.85rem;">API Key Redmine</label>
+                        <div class="position-relative">
+                            <input class="form-control form-control-sm" type="password" id="api-key-value" placeholder="Nhập API Key Redmine" autocomplete="off" autocapitalize="off" spellcheck="false" style="padding-right: 2.5rem;">
+                            <button class="btn-icon-xs position-absolute top-50 end-0 translate-middle-y me-1" type="button" id="btn-toggle-api-key" title="Hiện hoặc ẩn API key">
+                                <i class="bi bi-eye"></i>
+                            </button>
+                        </div>
+                        <div class="form-text" id="api-key-value-help" hidden>Để trống nếu muốn giữ nguyên key cũ.</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Hủy</button>
+                    <button type="button" class="btn btn-sm btn-indigo" id="btn-save-api-key">
                         <i class="bi bi-check-lg me-1"></i>Lưu
                     </button>
                 </div>
