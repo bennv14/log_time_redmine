@@ -106,9 +106,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const syncForm = document.getElementById('sync-form');
     const btnAddTask = document.getElementById('btn-add-task');
     const undoBtn = document.getElementById('btn-undo-delete');
-    const apiKeyInput = document.getElementById('api-key');
+    const apiKeyInput = document.getElementById('api-key-value');
     const btnToggleApiKey = document.getElementById('btn-toggle-api-key');
-    const btnClearApiKey = document.getElementById('btn-clear-api-key');
     const btnCheckDiff = document.getElementById('btn-check-diff');
     const btnResolveCheckDiff = document.getElementById('btn-check-diff-resolve');
 
@@ -169,12 +168,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    if (btnClearApiKey && apiKeyInput) {
-        btnClearApiKey.addEventListener('click', () => {
-            apiKeyInput.value = '';
-            apiKeyInput.focus();
-        });
-    }
+    initApiKeySelect();
 
     updateCurrentMonthLabel();
 
@@ -277,6 +271,178 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function handleAddTask() {
     new bootstrap.Modal(document.getElementById('addTaskModal')).show();
+}
+
+const API_KEY_STORAGE_KEY = 'redmine_log_time.apiKeys';
+
+/** @type {{activeId: string|null, items: Array<{id: string, name: string, key: string}>}} */
+let apiKeyStore = { activeId: null, items: [] };
+let _pendingApiKeyEditId = null;
+
+function loadApiKeyStore() {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(API_KEY_STORAGE_KEY) || 'null');
+        if (parsed && Array.isArray(parsed.items)) {
+            apiKeyStore = {
+                activeId: parsed.activeId || null,
+                items: parsed.items.filter(it => it && it.id && it.key)
+            };
+        }
+    } catch (_) {
+        // Storage bị chặn hoặc dữ liệu hỏng: dùng store rỗng
+    }
+    if (!apiKeyStore.items.some(it => it.id === apiKeyStore.activeId)) {
+        apiKeyStore.activeId = null;
+    }
+}
+
+function saveApiKeyStore() {
+    try {
+        localStorage.setItem(API_KEY_STORAGE_KEY, JSON.stringify(apiKeyStore));
+    } catch (_) {
+        showToast('Cảnh báo', 'Không lưu được API key vào trình duyệt.', 'warning');
+    }
+}
+
+function getActiveApiKey() {
+    const item = apiKeyStore.items.find(it => it.id === apiKeyStore.activeId);
+    return item ? item.key : '';
+}
+
+function maskApiKey(key) {
+    const text = String(key || '');
+    if (text.length <= 8) return '*'.repeat(text.length);
+    return `${text.slice(0, 4)}…${text.slice(-4)}`;
+}
+
+function renderApiKeySelect() {
+    const label = document.getElementById('api-key-select-label');
+    const menu = document.getElementById('api-key-menu');
+    const active = apiKeyStore.items.find(it => it.id === apiKeyStore.activeId);
+    label.textContent = active ? active.name : 'Chọn API key';
+
+    const options = apiKeyStore.items.map(it => {
+        const isActive = it.id === apiKeyStore.activeId;
+        return `
+        <li>
+            <div class="dropdown-item api-key-option ${isActive ? 'is-active' : ''}" role="button" tabindex="0" data-action="select" data-id="${escapeAttr(it.id)}">
+                <span class="api-key-option-icon"><i class="bi ${isActive ? 'bi-check-lg' : 'bi-key'}"></i></span>
+                <span class="api-key-option-text">
+                    <span class="api-key-option-name">${escapeHtml(it.name)}</span>
+                    <span class="api-key-option-mask">${escapeHtml(maskApiKey(it.key))}</span>
+                </span>
+                <span class="api-key-option-actions">
+                    <button type="button" class="api-key-action" data-action="edit" data-id="${escapeAttr(it.id)}" title="Sửa" aria-label="Sửa API key">
+                        <i class="bi bi-pencil"></i>
+                    </button>
+                    <button type="button" class="api-key-action api-key-action--danger" data-action="delete" data-id="${escapeAttr(it.id)}" title="Xóa" aria-label="Xóa API key">
+                        <i class="bi bi-trash3"></i>
+                    </button>
+                </span>
+            </div>
+        </li>`;
+    }).join('');
+    menu.innerHTML = `${options || '<li class="api-key-empty">Chưa có API key nào</li>'}
+        <li><hr class="dropdown-divider"></li>
+        <li>
+            <button type="button" class="dropdown-item api-key-option api-key-add" data-action="add">
+                <span class="api-key-option-icon"><i class="bi bi-plus-lg"></i></span>
+                <span>Thêm API key</span>
+            </button>
+        </li>`;
+}
+
+function openApiKeyModal(editId) {
+    const item = apiKeyStore.items.find(it => it.id === editId);
+    _pendingApiKeyEditId = item ? item.id : null;
+    document.getElementById('api-key-modal-title').textContent = item ? 'Sửa API key' : 'Thêm API key';
+    document.getElementById('api-key-name').value = item ? item.name : '';
+    document.getElementById('api-key-value').value = '';
+    document.getElementById('api-key-value-help').hidden = !item;
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('apiKeyModal')).show();
+}
+
+function handleSaveApiKey() {
+    const name = document.getElementById('api-key-name').value.trim();
+    const key = document.getElementById('api-key-value').value.trim();
+    const editing = apiKeyStore.items.find(it => it.id === _pendingApiKeyEditId);
+    if (!name || (!editing && !key)) {
+        showToast('Lỗi', 'Vui lòng nhập đầy đủ tên và API key.', 'warning');
+        return;
+    }
+    const others = apiKeyStore.items.filter(it => it !== editing);
+    if (others.some(it => it.name.toLowerCase() === name.toLowerCase())) {
+        showToast('Lỗi', `Tên "${name}" đã tồn tại.`, 'warning');
+        return;
+    }
+    const sameKey = key && others.find(it => it.key === key);
+    if (sameKey) {
+        showToast('Lỗi', `API key này đã được lưu với tên "${sameKey.name}".`, 'warning');
+        return;
+    }
+
+    if (editing) {
+        editing.name = name;
+        if (key) editing.key = key;
+    } else {
+        apiKeyStore.items.push({ id: `k_${Date.now()}`, name, key });
+    }
+    saveApiKeyStore();
+    renderApiKeySelect();
+    bootstrap.Modal.getInstance(document.getElementById('apiKeyModal')).hide();
+    showToast('Thành công', editing ? 'Đã cập nhật API key.' : 'Đã thêm API key.', 'success');
+}
+
+function handleDeleteApiKey(id) {
+    const item = apiKeyStore.items.find(it => it.id === id);
+    if (!item || !window.confirm(`Xóa API key "${item.name}"?`)) return;
+    apiKeyStore.items = apiKeyStore.items.filter(it => it.id !== id);
+    if (apiKeyStore.activeId === id) apiKeyStore.activeId = null;
+    saveApiKeyStore();
+    renderApiKeySelect();
+}
+
+function initApiKeySelect() {
+    loadApiKeyStore();
+    renderApiKeySelect();
+
+    document.getElementById('api-key-menu').addEventListener('click', (event) => {
+        const target = event.target.closest('[data-action]');
+        if (!target) return;
+        const { action, id } = target.dataset;
+        if (action === 'select') {
+            apiKeyStore.activeId = id;
+            saveApiKeyStore();
+            renderApiKeySelect();
+        } else if (action === 'edit') {
+            openApiKeyModal(id);
+        } else if (action === 'delete') {
+            // Giữ dropdown mở sau khi xóa
+            event.stopPropagation();
+            handleDeleteApiKey(id);
+        } else if (action === 'add') {
+            openApiKeyModal(null);
+        }
+    });
+
+    const modalEl = document.getElementById('apiKeyModal');
+    document.getElementById('btn-save-api-key').addEventListener('click', handleSaveApiKey);
+    modalEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            handleSaveApiKey();
+        }
+    });
+    modalEl.addEventListener('shown.bs.modal', () => {
+        document.getElementById('api-key-name').focus();
+    });
+    modalEl.addEventListener('hidden.bs.modal', () => {
+        const input = document.getElementById('api-key-value');
+        input.value = '';
+        input.type = 'password';
+        document.getElementById('btn-toggle-api-key').innerHTML = '<i class="bi bi-eye"></i>';
+        _pendingApiKeyEditId = null;
+    });
 }
 
 function setCsvFileNameDisplay(fileName) {
@@ -1316,12 +1482,11 @@ async function mutateRedmineTimeEntry({ entryId, issueId, spentOn, webHours, hou
 }
 
 async function handleCheckDiffEntryAction(btn) {
-    const apiKeyInput = document.getElementById('api-key');
-    if (!apiKeyInput.value) {
-        apiKeyInput.reportValidity();
+    const apiKey = getActiveApiKey();
+    if (!apiKey) {
+        showToast('Lỗi', 'Vui lòng chọn API key', 'warning');
         return;
     }
-    const apiKey = apiKeyInput.value;
     const action = btn.getAttribute('data-entry-action');
     const entryId = btn.getAttribute('data-entry-id');
     const issueId = btn.getAttribute('data-issue');
@@ -1387,12 +1552,11 @@ async function handleCheckDiff() {
         showAlert('Lỗi dữ liệu: Vui lòng sửa các ô có giờ làm việc âm hoặc vượt quá 24h trước khi tiếp tục.');
         return;
     }
-    const apiKeyInput = document.getElementById('api-key');
-    if (!apiKeyInput.value) {
-        apiKeyInput.reportValidity();
+    const apiKey = getActiveApiKey();
+    if (!apiKey) {
+        showToast('Lỗi', 'Vui lòng chọn API key', 'warning');
         return;
     }
-    const apiKey = apiKeyInput.value;
     const checkData = collectCheckData();
     if (!checkData.fromDate || !checkData.toDate) {
         showToast('Thông báo', 'Không có ngày để kiểm tra.', 'info');
@@ -1443,12 +1607,11 @@ async function handleSync(e) {
         showAlert('Lỗi dữ liệu: Vui lòng sửa các ô có giờ làm việc âm hoặc vượt quá 24h trước khi tiếp tục.');
         return;
     }
-    const apiKeyInput = document.getElementById('api-key');
-    if (!apiKeyInput.value) {
-        apiKeyInput.reportValidity();
+    const apiKey = getActiveApiKey();
+    if (!apiKey) {
+        showToast('Lỗi', 'Vui lòng chọn API key', 'warning');
         return;
     }
-    const apiKey = apiKeyInput.value;
     const checkData = collectCheckData();
     if (!checkData.fromDate || !checkData.toDate) {
         showToast('Thông báo', 'Không có ngày để đồng bộ.', 'info');
@@ -1509,12 +1672,11 @@ async function handleResolveCheckDiff() {
         showAlert('Lỗi dữ liệu: Vui lòng sửa các ô có giờ làm việc âm hoặc vượt quá 24h trước khi tiếp tục.');
         return;
     }
-    const apiKeyInput = document.getElementById('api-key');
-    if (!apiKeyInput.value) {
-        apiKeyInput.reportValidity();
+    const apiKey = getActiveApiKey();
+    if (!apiKey) {
+        showToast('Lỗi', 'Vui lòng chọn API key', 'warning');
         return;
     }
-    const apiKey = apiKeyInput.value;
     const collected = collectSyncEntries();
     const filtered = getCheckDiffEntriesForResolve(collected);
     if (filtered.length === 0) {
