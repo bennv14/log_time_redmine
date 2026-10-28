@@ -54,6 +54,88 @@ if not _time_entry_logger.handlers:
     _time_entry_logger.addHandler(_te_handler)
 _time_entry_logger.propagate = False
 
+_api_logger = logging.getLogger("app.api")
+_api_logger.setLevel(logging.INFO)
+if not _api_logger.handlers:
+    _api_handler = logging.FileHandler(_LOGS_DIR / "api_requests.log", encoding="utf-8")
+    _api_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _api_logger.addHandler(_api_handler)
+_api_logger.propagate = True
+
+
+def _mask_api_key(value: Any) -> Any:
+    text = str(value or "")
+    if len(text) <= 8:
+        return "*" * len(text)
+    return f"{text[:4]}***{text[-4:]}"
+
+
+def _sanitize_for_logging(value: Any) -> Any:
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for k, v in value.items():
+            if str(k).lower() == "apikey":
+                out[k] = _mask_api_key(v)
+            else:
+                out[k] = _sanitize_for_logging(v)
+        return out
+    if isinstance(value, list):
+        return [_sanitize_for_logging(x) for x in value]
+    return value
+
+
+def _extract_response_body_for_log(response: Response) -> Any:
+    if response.mimetype == "text/event-stream":
+        return "<stream:event-stream>"
+    try:
+        body_bytes = response.get_data()
+    except Exception:
+        return "<unavailable>"
+    if not body_bytes:
+        return ""
+    body_text = body_bytes.decode("utf-8", errors="replace")
+    body_text = body_text[:2000]
+    try:
+        return _sanitize_for_logging(json.loads(body_text))
+    except Exception:
+        return body_text
+
+
+@app.before_request
+def _log_api_request() -> None:
+    if not request.path.startswith("/api/"):
+        return
+    payload: Any = {}
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+    elif request.files:
+        payload = {"files": list(request.files.keys())}
+    elif request.form:
+        payload = {"form_keys": list(request.form.keys())}
+    record = {
+        "type": "request",
+        "method": request.method,
+        "path": request.path,
+        "query": request.args.to_dict(flat=True),
+        "payload": _sanitize_for_logging(payload),
+    }
+    _api_logger.info(json.dumps(record, ensure_ascii=False))
+
+
+@app.after_request
+def _log_api_response(response: Response) -> Response:
+    if not request.path.startswith("/api/"):
+        return response
+    record = {
+        "type": "response",
+        "method": request.method,
+        "path": request.path,
+        "status_code": response.status_code,
+        "payload": _extract_response_body_for_log(response),
+    }
+    _api_logger.info(json.dumps(record, ensure_ascii=False))
+    return response
+
 
 def _log_time_entry_result(entry: Dict[str, Any], res: TimeEntryResult) -> None:
     record: Dict[str, Any] = {
