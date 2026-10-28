@@ -45,6 +45,88 @@ if not _time_entry_logger.handlers:
     _time_entry_logger.addHandler(_te_handler)
 _time_entry_logger.propagate = False
 
+_api_logger = logging.getLogger("app.api")
+_api_logger.setLevel(logging.INFO)
+if not _api_logger.handlers:
+    _api_handler = logging.FileHandler(_LOGS_DIR / "api_requests.log", encoding="utf-8")
+    _api_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _api_logger.addHandler(_api_handler)
+_api_logger.propagate = True
+
+
+def _mask_api_key(value: Any) -> Any:
+    text = str(value or "")
+    if len(text) <= 8:
+        return "*" * len(text)
+    return f"{text[:4]}***{text[-4:]}"
+
+
+def _sanitize_for_logging(value: Any) -> Any:
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for k, v in value.items():
+            if str(k).lower() == "apikey":
+                out[k] = _mask_api_key(v)
+            else:
+                out[k] = _sanitize_for_logging(v)
+        return out
+    if isinstance(value, list):
+        return [_sanitize_for_logging(x) for x in value]
+    return value
+
+
+def _extract_response_body_for_log(response: Response) -> Any:
+    if response.mimetype == "text/event-stream":
+        return "<stream:event-stream>"
+    try:
+        body_bytes = response.get_data()
+    except Exception:
+        return "<unavailable>"
+    if not body_bytes:
+        return ""
+    body_text = body_bytes.decode("utf-8", errors="replace")
+    body_text = body_text[:2000]
+    try:
+        return _sanitize_for_logging(json.loads(body_text))
+    except Exception:
+        return body_text
+
+
+@app.before_request
+def _log_api_request() -> None:
+    if not request.path.startswith("/api/"):
+        return
+    payload: Any = {}
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+    elif request.files:
+        payload = {"files": list(request.files.keys())}
+    elif request.form:
+        payload = {"form_keys": list(request.form.keys())}
+    record = {
+        "type": "request",
+        "method": request.method,
+        "path": request.path,
+        "query": request.args.to_dict(flat=True),
+        "payload": _sanitize_for_logging(payload),
+    }
+    _api_logger.info(json.dumps(record, ensure_ascii=False))
+
+
+@app.after_request
+def _log_api_response(response: Response) -> Response:
+    if not request.path.startswith("/api/"):
+        return response
+    record = {
+        "type": "response",
+        "method": request.method,
+        "path": request.path,
+        "status_code": response.status_code,
+        "payload": _extract_response_body_for_log(response),
+    }
+    _api_logger.info(json.dumps(record, ensure_ascii=False))
+    return response
+
 
 def _log_time_entry_result(entry: Dict[str, Any], res: TimeEntryResult) -> None:
     record: Dict[str, Any] = {
@@ -186,6 +268,7 @@ def upload_csv():
             return jsonify({"error": str(e)}), 500
 
 _SSE_MAX_WORKERS = 8
+_CHECK_MAX_WORKERS = 8
 
 
 def _format_sse(data: Dict[str, Any]) -> str:
@@ -211,6 +294,38 @@ def _post_one(
         return eid, entry, res
 
 
+def _check_one(
+    client: AbstractRedmineTimeClient, item: Dict[str, Any]
+) -> Dict[str, Any]:
+    issue_id = item["issue_id"]
+    spent_on = item["spent_on"]
+    web_hours = float(item["web_hours"])
+    try:
+        redmine_entries = client.list_time_entries(issue_id=issue_id, spent_on=spent_on)
+        redmine_hours = float(sum(float(e.hours or 0) for e in redmine_entries))
+        delta = round(web_hours - redmine_hours, 4)
+        return {
+            "issue_id": issue_id,
+            "spent_on": spent_on,
+            "web_hours": round(web_hours, 4),
+            "redmine_hours": round(redmine_hours, 4),
+            "delta": delta,
+            "is_same": abs(delta) < 1e-9,
+            "count_redmine_entries": len(redmine_entries),
+        }
+    except Exception as e:
+        app.logger.error("check diff failed (%s, %s): %s", issue_id, spent_on, e)
+        return {
+            "issue_id": issue_id,
+            "spent_on": spent_on,
+            "web_hours": round(web_hours, 4),
+            "redmine_hours": None,
+            "delta": None,
+            "is_same": False,
+            "error": str(e),
+        }
+
+
 def _build_check_items(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     grouped: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for raw in entries:
@@ -234,56 +349,40 @@ def _build_check_items(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 @app.route("/api/sync/check", methods=["POST"])
 def check_redmine_diff():
-    data = request.get_json(silent=True) or {}
-    api_key = data.get("apiKey")
-    entries: List[Dict[str, Any]] = data.get("entries", [])
+    try:
+        data = request.get_json(silent=True) or {}
+        api_key = data.get("apiKey")
+        entries: List[Dict[str, Any]] = data.get("entries", [])
 
-    backend = app.config["REDMINE_BACKEND"]
-    if backend_requires_api_key(backend) and not api_key:
-        return jsonify({"error": "Vui lòng nhập khóa API"}), 400
-    if not entries:
-        return jsonify({"error": "Không có bản ghi để kiểm tra"}), 400
+        backend = app.config["REDMINE_BACKEND"]
+        if backend_requires_api_key(backend) and not api_key:
+            return jsonify({"error": "Vui lòng nhập khóa API"}), 400
+        if not entries:
+            return jsonify({"error": "Không có bản ghi để kiểm tra"}), 400
 
-    client: AbstractRedmineTimeClient = create_redmine_time_client(
-        backend,
-        api_key=api_key,
-    )
-    output: List[Dict[str, Any]] = []
+        client: AbstractRedmineTimeClient = create_redmine_time_client(
+            backend,
+            api_key=api_key,
+        )
+        check_items = _build_check_items(entries)
+        if not check_items:
+            return jsonify({"items": []})
 
-    for item in _build_check_items(entries):
-        issue_id = item["issue_id"]
-        spent_on = item["spent_on"]
-        web_hours = float(item["web_hours"])
-        try:
-            redmine_entries = client.list_time_entries(issue_id=issue_id, spent_on=spent_on)
-            redmine_hours = float(sum(float(e.hours or 0) for e in redmine_entries))
-            delta = round(web_hours - redmine_hours, 4)
-            output.append(
-                {
-                    "issue_id": issue_id,
-                    "spent_on": spent_on,
-                    "web_hours": round(web_hours, 4),
-                    "redmine_hours": round(redmine_hours, 4),
-                    "delta": delta,
-                    "is_same": abs(delta) < 1e-9,
-                    "count_redmine_entries": len(redmine_entries),
-                }
-            )
-        except Exception as e:
-            app.logger.error("check diff failed (%s, %s): %s", issue_id, spent_on, e)
-            output.append(
-                {
-                    "issue_id": issue_id,
-                    "spent_on": spent_on,
-                    "web_hours": round(web_hours, 4),
-                    "redmine_hours": None,
-                    "delta": None,
-                    "is_same": False,
-                    "error": str(e),
-                }
-            )
-
-    return jsonify({"items": output})
+        output: List[Dict[str, Any]] = []
+        max_workers = min(_CHECK_MAX_WORKERS, max(1, len(check_items)))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_map = {
+                pool.submit(_check_one, client, item): idx
+                for idx, item in enumerate(check_items)
+            }
+            ordered: List[Tuple[int, Dict[str, Any]]] = []
+            for fut in as_completed(future_map):
+                ordered.append((future_map[fut], fut.result()))
+            output = [row for _, row in sorted(ordered, key=lambda x: x[0])]
+        return jsonify({"items": output})
+    except Exception as e:
+        app.logger.exception("check route failed: %s", e)
+        return jsonify({"error": f"Lỗi hệ thống khi check: {e}"}), 500
 
 
 @app.route("/api/sync/stream", methods=["POST"])

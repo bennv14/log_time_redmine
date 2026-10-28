@@ -1190,14 +1190,28 @@ async function runCheckDiff(entries, apiKey) {
         },
         body: JSON.stringify({ apiKey, entries: toApiEntries(entries) })
     });
-    const data = await response.json();
-    if (!response.ok) {
-        throw new Error(data.error || `HTTP ${response.status}`);
+    const rawText = await response.text();
+    let data = {};
+    if (rawText) {
+        try {
+            data = JSON.parse(rawText);
+        } catch (_) {
+            data = {};
+        }
     }
-    return data.items || [];
+    if (!response.ok) {
+        const fallback = rawText ? String(rawText).slice(0, 300) : `HTTP ${response.status}`;
+        throw new Error((data && data.error) || fallback);
+    }
+    if (!data || !Array.isArray(data.items)) {
+        return [];
+    }
+    return data.items;
 }
 
 async function handleCheckDiff() {
+    const btnCheckDiff = document.getElementById('btn-check-diff');
+    const originalBtnHtml = btnCheckDiff ? btnCheckDiff.innerHTML : '';
     const apiKey = document.getElementById('api-key').value;
     if (!apiKey) {
         showToast('Lỗi', 'Vui lòng nhập khóa API', 'warning');
@@ -1207,6 +1221,10 @@ async function handleCheckDiff() {
     if (collected.length === 0) {
         showToast('Thông báo', 'Không có dữ liệu giờ làm việc để kiểm tra.', 'info');
         return;
+    }
+    if (btnCheckDiff) {
+        btnCheckDiff.disabled = true;
+        btnCheckDiff.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Đang check...';
     }
     try {
         const items = await runCheckDiff(collected, apiKey);
@@ -1222,6 +1240,11 @@ async function handleCheckDiff() {
         updateSyncActionButtons();
     } catch (error) {
         showToast('Lỗi', error.message, 'danger');
+    } finally {
+        if (btnCheckDiff) {
+            btnCheckDiff.innerHTML = originalBtnHtml;
+        }
+        updateSyncActionButtons();
     }
 }
 
